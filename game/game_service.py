@@ -178,7 +178,10 @@ class GameService:
         return answer
 
     def all_answered(self) -> bool:
-        return len(self._answers) >= len(self._players)
+        video = self.current_video()
+        owner_id = video.owner_player_id if video else ""
+        eligible = sum(1 for p in self._players if p.player_id != owner_id)
+        return len(self._answers) >= max(1, eligible)
 
     def end_round(self) -> RoundResult:
         video  = self.current_video()

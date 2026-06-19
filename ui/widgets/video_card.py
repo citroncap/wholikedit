@@ -66,9 +66,9 @@ class VideoCard(QWidget):
             self._web.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             try:
                 from PyQt6.QtWebEngineCore import QWebEngineSettings
-                self._web.settings().setAttribute(
-                    QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False
-                )
+                s = self._web.settings()
+                s.setAttribute(QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False)
+                s.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
             except Exception:
                 pass
             html = (

@@ -43,6 +43,11 @@ class GameScreen(QWidget):
         self._tick_timer.setInterval(100)
         self._tick_timer.timeout.connect(self._on_tick)
 
+        self._auto_next_timer = QTimer(self)
+        self._auto_next_timer.setInterval(1000)
+        self._auto_next_timer.timeout.connect(self._on_auto_next_tick)
+        self._auto_next_count = 0
+
         self._pages: dict[str, QWidget] = {}
         self._build()
         self._show("waiting")
@@ -212,18 +217,23 @@ class GameScreen(QWidget):
         self._score_summary.setWordWrap(True)
         self._score_summary.setMaximumWidth(480)
 
-        self._res_next = QPushButton("Next Round →")
+        self._res_next = QPushButton("Passer →")
         self._res_next.setProperty("primary", True)
         self._res_next.setFixedHeight(52)
-        self._res_next.setFixedWidth(240)
-        self._res_next.clicked.connect(self.next_round_host)
+        self._res_next.setFixedWidth(200)
+        self._res_next.clicked.connect(self._on_next_btn_clicked)
+
+        self._res_countdown = QLabel("")
+        self._res_countdown.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._res_countdown.setStyleSheet("color:#555; font-size:12px;")
 
         layout.addStretch()
         for w in (self._res_emoji, self._res_headline, self._res_pts,
                   self._res_correct, self._score_summary):
             layout.addWidget(w, alignment=Qt.AlignmentFlag.AlignHCenter)
-        layout.addSpacing(16)
+        layout.addSpacing(12)
         layout.addWidget(self._res_next, alignment=Qt.AlignmentFlag.AlignHCenter)
+        layout.addWidget(self._res_countdown, alignment=Qt.AlignmentFlag.AlignHCenter)
         layout.addStretch()
         return page
 
@@ -298,6 +308,7 @@ class GameScreen(QWidget):
         choices: list[Player],
     ) -> None:
         """Begin displaying a round (called by MainWindow from host or client data)."""
+        self._auto_next_timer.stop()
         self._answered    = False
         self._choices     = choices
         self._current_video = video
@@ -413,43 +424,66 @@ class GameScreen(QWidget):
                 btn.mark_wrong()
             btn.setEnabled(False)
 
-        if self._is_host:
-            self._next_btn.setVisible(True)
-
-        # Build result popup
+        # My result header
         if my_answer:
             pts = my_answer.get("points", 0)
             ok  = my_answer.get("is_correct", False)
             self._res_emoji.setText("✅" if ok else "❌")
-            self._res_headline.setText("Correct!" if ok else "Wrong!")
+            self._res_headline.setText("Correct !" if ok else "Raté !")
             self._res_headline.setStyleSheet(
                 "color:#2ECC71;" if ok else "color:#FE2C55;"
             )
-            self._res_pts.setText(
-                f"+{format_score(pts)} pts" if ok else "+0 pts"
-            )
+            self._res_pts.setText(f"+{format_score(pts)} pts" if ok else "+0 pts")
         else:
-            self._res_emoji.setText("⏰")
-            self._res_headline.setText("Time's Up!")
-            self._res_headline.setStyleSheet("color:#F39C12;")
-            self._res_pts.setText("+0 pts")
+            self._res_emoji.setText("🎬")
+            self._res_headline.setText("C'est ta vidéo !")
+            self._res_headline.setStyleSheet("color:#25F4EE;")
+            self._res_pts.setText("")
 
-        self._res_correct.setText(f"It was {correct_name} who liked this video.")
+        self._res_correct.setText(f"C'était {correct_name} qui a aimé cette vidéo.")
 
-        # Score summary for all players
-        sorted_scores = sorted(scores.items(), key=lambda x: -x[1])
+        # Per-round mini-leaderboard (points earned THIS round)
+        round_pts = {a["player_id"]: a.get("points", 0) for a in answers}
+        all_round = [(p, round_pts.get(p.player_id, 0)) for p in self._players]
+        all_round.sort(key=lambda x: -x[1])
         lines = []
-        for pid, pts in sorted_scores[:6]:
-            p = next((x for x in self._players if x.player_id == pid), None)
-            name = p.display_name if p else pid[:8]
-            me   = "  ← you" if pid == self._my_player_id else ""
-            lines.append(f"{name}:  {format_score(pts)}{me}")
+        for p, rpts in all_round[:8]:
+            me  = "  ← toi" if p.player_id == self._my_player_id else ""
+            ans = next((a for a in answers if a["player_id"] == p.player_id), None)
+            if ans is None:
+                marker, pts_str = "🎬", "—"
+            elif ans.get("is_correct"):
+                marker, pts_str = "✅", f"+{format_score(rpts)}"
+            else:
+                marker, pts_str = "❌", "+0"
+            total = format_score(scores.get(p.player_id, 0))
+            lines.append(f"{marker}  {p.display_name}:  {pts_str}  (total {total}){me}")
         self._score_summary.setText("\n".join(lines))
 
+        # Auto-advance countdown (host drives, clients see countdown only)
+        self._auto_next_count = 4
+        self._res_countdown.setText(f"Round suivant dans {self._auto_next_count}…")
         self._res_next.setVisible(self._is_host)
+        self._auto_next_timer.start()
         self._show("result")
 
+    def _on_next_btn_clicked(self) -> None:
+        self._auto_next_timer.stop()
+        self._res_countdown.setText("")
+        self.next_round_host.emit()
+
+    def _on_auto_next_tick(self) -> None:
+        self._auto_next_count -= 1
+        if self._auto_next_count <= 0:
+            self._auto_next_timer.stop()
+            self._res_countdown.setText("")
+            if self._is_host:
+                self.next_round_host.emit()
+        else:
+            self._res_countdown.setText(f"Round suivant dans {self._auto_next_count}…")
+
     def show_final_leaderboard(self, entries: list[LeaderboardEntry]) -> None:
+        self._auto_next_timer.stop()
         # Clear old entries
         while self._lb_vbox.count() > 1:
             item = self._lb_vbox.takeAt(0)

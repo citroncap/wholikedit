@@ -7,6 +7,10 @@ import logging
 # Ensure the project root is in sys.path when run as a script or EXE
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Must be before QApplication — allows WebEngine to autoplay without user gesture
+if "--autoplay-policy" not in " ".join(sys.argv):
+    sys.argv += ["--autoplay-policy=no-user-gesture-required"]
+
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt, QT_VERSION_STR, PYQT_VERSION_STR
 from PyQt6.QtGui import QFont
