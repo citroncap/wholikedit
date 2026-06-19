@@ -15,8 +15,9 @@ from utils.config import AVATAR_COLORS, RELAY_URL
 
 class LobbyScreen(QWidget):
     # Host signals
-    start_game_requested = pyqtSignal()
+    start_game_requested  = pyqtSignal()
     kick_player_requested = pyqtSignal(str)   # player_id
+    relay_refresh_requested = pyqtSignal()    # retry relay connection
     # Client signal
     ready_toggled = pyqtSignal(bool)          # ready state
     # Both
@@ -150,13 +151,28 @@ class LobbyScreen(QWidget):
 
         # ── Relay / Direct IP ────────────────────────────────────────────────
         if RELAY_URL:
+            relay_row = QHBoxLayout()
+            relay_row.setSpacing(6)
             self._relay_badge = QLabel("⏳  Relay connecting…")
             self._relay_badge.setStyleSheet(
                 "color:#888;font-size:10px;background:#1a1a1a;"
                 "border:1px solid #2a2a2a;border-radius:6px;padding:4px 8px;"
             )
             self._relay_badge.setWordWrap(True)
-            cf.addWidget(self._relay_badge)
+            relay_row.addWidget(self._relay_badge, 1)
+            self._relay_refresh_btn = QPushButton("↺")
+            self._relay_refresh_btn.setFixedSize(26, 26)
+            self._relay_refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._relay_refresh_btn.setToolTip("Retry relay connection")
+            self._relay_refresh_btn.setStyleSheet("""
+                QPushButton{background:#1a1a1a;border:1px solid #444;border-radius:6px;
+                            color:#888;font-size:14px;}
+                QPushButton:hover{border-color:#FE2C55;color:#FE2C55;}
+            """)
+            self._relay_refresh_btn.setVisible(False)
+            self._relay_refresh_btn.clicked.connect(self._on_relay_refresh)
+            relay_row.addWidget(self._relay_refresh_btn)
+            cf.addLayout(relay_row)
             # Hide ip-related widgets (relay handles internet)
             self._ip_type_lbl = _lbl("", 11)   # placeholder kept for set_direct_address compat
             self._ip_type_lbl.setVisible(False)
@@ -435,12 +451,23 @@ class LobbyScreen(QWidget):
                 "color:#2ECC71;font-size:10px;background:#0d2a1a;"
                 "border:1px solid #1a4a2a;border-radius:6px;padding:4px 8px;"
             )
+            self._relay_refresh_btn.setVisible(False)
         else:
             self._relay_badge.setText(message)
             self._relay_badge.setStyleSheet(
                 "color:#888;font-size:10px;background:#1a1a1a;"
                 "border:1px solid #2a2a2a;border-radius:6px;padding:4px 8px;"
             )
+            # Show retry only when truly offline (not just waking up)
+            is_offline = "offline" in message.lower() or "unavailable" in message.lower()
+            self._relay_refresh_btn.setVisible(is_offline)
+            self._relay_refresh_btn.setText("↺")
+
+    def _on_relay_refresh(self) -> None:
+        self._relay_refresh_btn.setText("…")
+        self._relay_refresh_btn.setEnabled(False)
+        self.set_relay_status(False, "⏳  Relay waking up… (may take ~60s first time)")
+        self.relay_refresh_requested.emit()
 
     def set_direct_address(self, ip: str, port: int, is_tailscale: bool = False) -> None:
         """Called by MainWindow with the IP and port right after hosting starts."""

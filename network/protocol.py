@@ -23,6 +23,8 @@ MSG_ROUND_BEGIN    = "round_begin"     # {round_number, total_rounds, video: {vi
 MSG_ROUND_RESULT   = "round_result"    # {round_number, correct_player_id, correct_display_name, answers: [{player_id, display_name, guessed_player_id, is_correct, points, elapsed_ms}], scores: {player_id: int}}
 MSG_GAME_END       = "game_end"        # {leaderboard: [LeaderboardEntry.to_dict()]}
 MSG_PONG           = "pong"            # {}
+MSG_YOUR_ROUND     = "your_round"      # {} — owner of the current video; vote buttons disabled
+MSG_IDENTITY_UPDATE = "identity_update" # {display_name, avatar_color}
 
 
 def encode(msg: dict) -> bytes:

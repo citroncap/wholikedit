@@ -6,7 +6,6 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
-from network.discovery import RoomFinder
 from utils.config import RELAY_URL
 
 
@@ -16,7 +15,6 @@ class JoinScreen(QWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self._finder: RoomFinder | None = None
         self._build()
 
     def _build(self) -> None:
@@ -56,7 +54,7 @@ class JoinScreen(QWidget):
 
         c.addWidget(_h("Join a Room", 20))
 
-        # ── Shared room code input ────────────────────────────────────────────
+        # ── Room code input ───────────────────────────────────────────────────
         self._code_input = QLineEdit()
         self._code_input.setPlaceholderText("Room code — e.g. X7KD92")
         self._code_input.setFixedHeight(52)
@@ -69,24 +67,8 @@ class JoinScreen(QWidget):
             "QLineEdit:focus{border-color:#FE2C55;}"
         )
         self._code_input.textChanged.connect(self._on_code_changed)
-        self._code_input.returnPressed.connect(self._on_join_lan)
+        self._code_input.returnPressed.connect(self._on_join_relay if RELAY_URL else self._on_join_internet)
         c.addWidget(self._code_input)
-
-        # ── LAN button ───────────────────────────────────────────────────────
-        c.addWidget(_lbl("Same WiFi / local network", "#555"))
-        self._join_lan_btn = QPushButton("🔍  Find Room (same WiFi)")
-        self._join_lan_btn.setProperty("primary", True)
-        self._join_lan_btn.setFixedHeight(46)
-        self._join_lan_btn.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        self._join_lan_btn.setEnabled(False)
-        self._join_lan_btn.clicked.connect(self._on_join_lan)
-        c.addWidget(self._join_lan_btn)
-
-        # ── Separator ─────────────────────────────────────────────────────────
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("color:#2a2a2a; margin:4px 0;")
-        c.addWidget(sep)
 
         if RELAY_URL:
             # ── Relay section (relay server is configured) ────────────────────
@@ -153,20 +135,8 @@ class JoinScreen(QWidget):
         if cleaned != text:
             self._code_input.setText(cleaned)
         has_code = len(cleaned) == 6
-        self._join_lan_btn.setEnabled(has_code)
-        if RELAY_URL:
-            self._join_inet_btn.setEnabled(has_code)
+        self._join_inet_btn.setEnabled(has_code)
         self._status_lbl.setText("")
-
-    def _on_join_lan(self) -> None:
-        code = self._code_input.text().strip().upper()
-        if len(code) != 6:
-            return
-        self._set_searching(True, "lan")
-        self._finder = RoomFinder(code)
-        self._finder.found.connect(lambda ip, port: self._on_found(code, ip, port))
-        self._finder.not_found.connect(self._on_not_found)
-        self._finder.start()
 
     # ── Relay join ────────────────────────────────────────────────────────────
 
@@ -174,7 +144,7 @@ class JoinScreen(QWidget):
         code = self._code_input.text().strip().upper()
         if len(code) != 6:
             return
-        self._set_searching(True, "inet")
+        self._set_searching(True)
         # Emit "RELAY" as the host_ip — MainWindow will switch GameClient to relay mode
         self.join_found.emit(code, "RELAY", 0)
 
@@ -195,58 +165,33 @@ class JoinScreen(QWidget):
             return
         host_ip = parts[0]
         port    = int(parts[1])
-        self._set_searching(True, "inet")
+        self._set_searching(True)
         self.join_found.emit("INET00", host_ip, port)
 
     def on_inet_failed(self, reason: str) -> None:
         """Called by MainWindow when the connection attempt fails."""
-        self._set_searching(False, "inet")
+        self._set_searching(False)
         self._status_lbl.setText(f"❌ {reason}")
         self._status_lbl.setStyleSheet("color:#FE2C55;font-size:12px;")
 
     # ── Shared ────────────────────────────────────────────────────────────────
 
-    def _on_found(self, code: str, host_ip: str, port: int) -> None:
-        self._set_searching(False, "lan")
-        self.join_found.emit(code, host_ip, port)
-
-    def _on_not_found(self) -> None:
-        self._set_searching(False, "lan")
-        self._status_lbl.setText("❌ Room not found. Check the code and try again.")
-        self._status_lbl.setStyleSheet("color:#FE2C55;font-size:12px;")
-
-    def _set_searching(self, searching: bool, mode: str = "lan") -> None:
-        self._join_lan_btn.setEnabled(not searching)
+    def _set_searching(self, searching: bool) -> None:
         self._code_input.setEnabled(not searching)
         if self._ip_input:
             self._ip_input.setEnabled(not searching)
-
-        if searching and mode == "lan":
-            self._join_lan_btn.setText("Searching…")
-            self._status_lbl.setStyleSheet("color:#888;font-size:12px;")
-            self._status_lbl.setText("Searching on local network…")
-        elif searching and mode == "inet":
+        if searching:
             self._join_inet_btn.setText("Connecting…")
             self._join_inet_btn.setEnabled(False)
             self._status_lbl.setStyleSheet("color:#888;font-size:12px;")
             self._status_lbl.setText("Connecting…")
-        elif not searching:
-            self._join_lan_btn.setText("🔍  Find Room (same WiFi)")
-            self._join_inet_btn.setText("🌐  Join via Internet  ←  use this one" if RELAY_URL else "🌐  Join via Internet")
-            code = self._code_input.text().strip().upper()
-            has_code = len(code) == 6
-            self._join_lan_btn.setEnabled(has_code)
-            if RELAY_URL:
-                self._join_inet_btn.setEnabled(has_code)
-            else:
-                # Re-enable based on IP:PORT validity
-                if self._ip_input:
-                    self._on_ip_changed(self._ip_input.text())
+        else:
+            self._join_inet_btn.setText("🌐  Join via Internet" if not RELAY_URL else "🌐  Join via Internet")
+            has_code = len(self._code_input.text().strip()) == 6
+            self._join_inet_btn.setEnabled(has_code if RELAY_URL else bool(self._ip_input and self._ip_input.text()))
             self._status_lbl.setText("")
 
     def _on_back(self) -> None:
-        if self._finder and self._finder.isRunning():
-            self._finder.terminate()
         self.back_requested.emit()
 
     def showEvent(self, event) -> None:
@@ -255,7 +200,6 @@ class JoinScreen(QWidget):
         if self._ip_input:
             self._ip_input.clear()
         self._status_lbl.setText("")
-        self._join_lan_btn.setEnabled(False)
         self._join_inet_btn.setEnabled(False)
         self._code_input.setFocus()
 

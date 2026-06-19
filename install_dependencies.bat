@@ -66,6 +66,9 @@ echo [INFO] Verifying installations...
 python -c "from PyQt6.QtCore import PYQT_VERSION_STR; print('[OK] PyQt6', PYQT_VERSION_STR)"
 if errorlevel 1 ( echo [FAIL] PyQt6 & goto :fail )
 
+python -c "from PyQt6.QtWebEngineWidgets import QWebEngineView; print('[OK] PyQt6-WebEngine')"
+if errorlevel 1 ( echo [FAIL] PyQt6-WebEngine & goto :fail )
+
 python -c "import cryptography; print('[OK] cryptography', cryptography.__version__)"
 if errorlevel 1 ( echo [FAIL] cryptography & goto :fail )
 

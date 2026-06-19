@@ -1,15 +1,16 @@
-"""Video card shown during a game round — preview placeholder + download/browser options."""
+"""Video card shown during a game round — embeds TikTok player in-app."""
 from __future__ import annotations
-import os
 import re
-import tempfile
-import threading
-import urllib.request
-import webbrowser
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy
-from PyQt6.QtCore import Qt, QMetaObject, pyqtSignal, pyqtSlot
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QSizePolicy
+from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QFont, QColor, QPainter, QLinearGradient
 from models.game import GameVideo
+
+try:
+    from PyQt6.QtWebEngineWidgets import QWebEngineView
+    _WEBENGINE = True
+except ImportError:
+    _WEBENGINE = False
 
 # Cycling gradient pairs (index by hash of video_id)
 _GRADIENTS = [
@@ -23,29 +24,21 @@ _GRADIENTS = [
     ("#1ABC9C", "#2ECC71"),
 ]
 
-_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Referer": "https://www.tiktok.com/",
-}
 
-
-def _extract_video_id(video: GameVideo) -> str:
+def _video_id_from(video: GameVideo) -> str | None:
+    """Extract numeric TikTok video ID from video_url, or use video_id if it looks real."""
     if video.video_url:
         m = re.search(r"/video/(\d+)", video.video_url)
         if m:
             return m.group(1)
-    return video.video_id
+    vid = video.video_id or ""
+    if vid.isdigit() and len(vid) > 10:
+        return vid
+    return None
 
 
 class VideoCard(QWidget):
-    """Shows a styled preview placeholder with Watch and Download-Preview buttons."""
-
-    # Emitted with the local temp file path after a successful download
-    video_downloaded = pyqtSignal(str)
+    """Shows TikTok embed player if a real video ID is available, else a gradient placeholder."""
 
     def __init__(
         self,
@@ -58,114 +51,52 @@ class VideoCard(QWidget):
         self._video  = video
         self._color1 = color1
         self._color2 = color2
-        self._preview_btn = None
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._build()
 
     def _build(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        # ── Gradient preview ─────────────────────────────────────────────────
-        preview = _GradientPreview(self._video, self._color1, self._color2)
-        preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        layout.addWidget(preview, stretch=1)
+        vid_id = _video_id_from(self._video)
 
-        has_url = bool(self._video.video_url)
-
-        # ── Download & preview locally ───────────────────────────────────────
-        prev_btn = QPushButton("📥  Preview (télécharger)")
-        prev_btn.setFixedHeight(40)
-        prev_btn.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
-        prev_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        prev_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
-                    stop:0 {self._color1}, stop:1 {self._color2});
-                color: #fff; border: none; border-radius: 10px;
-                font-weight: 700; letter-spacing: 0.5px;
-            }}
-            QPushButton:hover  {{ opacity: 0.88; }}
-            QPushButton:pressed {{ opacity: 0.70; }}
-            QPushButton:disabled {{ background: #2a2a2a; color: #555; }}
-        """)
-        if has_url:
-            prev_btn.clicked.connect(self._on_preview_click)
+        if vid_id and _WEBENGINE:
+            self._web = QWebEngineView()
+            self._web.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            try:
+                from PyQt6.QtWebEngineCore import QWebEngineSettings
+                self._web.settings().setAttribute(
+                    QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False
+                )
+            except Exception:
+                pass
+            html = (
+                "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+                "<style>*{margin:0;padding:0}body{background:#000;overflow:hidden}</style>"
+                "</head><body>"
+                f"<blockquote class='tiktok-embed'"
+                f" cite='https://www.tiktok.com/@u/video/{vid_id}'"
+                f" data-video-id='{vid_id}'"
+                " style='max-width:100%;min-width:100%;'>"
+                "<section></section></blockquote>"
+                "<script async src='https://www.tiktok.com/embed.js'></script>"
+                "</body></html>"
+            )
+            self._web.setHtml(html, QUrl("https://www.tiktok.com/"))
+            layout.addWidget(self._web)
         else:
-            prev_btn.setEnabled(False)
-            prev_btn.setText("Pas de lien disponible")
-        self._preview_btn = prev_btn
-        layout.addWidget(prev_btn)
-
-        # ── Open in browser (secondary) ───────────────────────────────────────
-        if has_url:
-            watch_btn = QPushButton("↗  Ouvrir dans le navigateur")
-            watch_btn.setFixedHeight(32)
-            watch_btn.setFont(QFont("Segoe UI", 10))
-            watch_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            watch_btn.setStyleSheet("""
-                QPushButton {
-                    background: transparent; color: #888;
-                    border: 1px solid #333; border-radius: 8px;
-                }
-                QPushButton:hover { color: #fff; border-color: #666; }
-            """)
-            url = self._video.video_url
-            watch_btn.clicked.connect(lambda: webbrowser.open(url))
-            layout.addWidget(watch_btn)
-
-    # ── Download logic ────────────────────────────────────────────────────────
-
-    def _on_preview_click(self) -> None:
-        if not self._preview_btn:
-            return
-        self._preview_btn.setEnabled(False)
-        self._preview_btn.setText("⏳  Téléchargement…")
-        url = self._video.video_url
-        threading.Thread(target=self._download_thread, args=(url,), daemon=True).start()
-
-    def _download_thread(self, url: str) -> None:
-        try:
-            req = urllib.request.Request(url, headers=_HEADERS)
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data = resp.read()
-            suffix = ".mp4"
-            fd, path = tempfile.mkstemp(suffix=suffix)
-            with os.fdopen(fd, "wb") as f:
-                f.write(data)
-            self.video_downloaded.emit(path)
-            self._set_preview_done(path)
-        except Exception as exc:
-            self._set_preview_error(str(exc))
-
-    def _set_preview_done(self, path: str) -> None:
-        self._pending_path = path
-        QMetaObject.invokeMethod(
-            self, "_open_and_label", Qt.ConnectionType.QueuedConnection,
-        )
-
-    def _set_preview_error(self, msg: str) -> None:
-        self._pending_error = msg
-        QMetaObject.invokeMethod(
-            self, "_show_error", Qt.ConnectionType.QueuedConnection,
-        )
-
-    @pyqtSlot()
-    def _open_and_label(self) -> None:
-        path = getattr(self, "_pending_path", None)
-        if path and os.path.exists(path):
-            os.startfile(path)
-            if self._preview_btn:
-                self._preview_btn.setText("✅  Ouvert !")
-        if self._preview_btn:
-            self._preview_btn.setEnabled(True)
-
-    @pyqtSlot()
-    def _show_error(self) -> None:
-        if self._preview_btn:
-            self._preview_btn.setText("❌  Échec — ouvre dans le navigateur")
-            self._preview_btn.setEnabled(True)
+            # No WebEngine or no real video ID — gradient placeholder
+            preview = _GradientPreview(self._video, self._color1, self._color2)
+            preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            layout.addWidget(preview)
+            if vid_id and not _WEBENGINE:
+                lbl = QLabel("Installe PyQt6-WebEngine pour voir la vidéo\npip install PyQt6-WebEngine")
+            else:
+                lbl = QLabel("Pas de vidéo disponible")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setStyleSheet("color:#555;font-size:11px;padding:6px;")
+            layout.addWidget(lbl)
 
 
 class _GradientPreview(QWidget):

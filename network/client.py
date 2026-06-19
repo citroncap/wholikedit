@@ -12,6 +12,7 @@ from network.protocol import (
     MSG_JOIN_ACCEPT, MSG_JOIN_REJECT, MSG_LOBBY_UPDATE,
     MSG_PLAYER_KICKED, MSG_GAME_START, MSG_ROUND_BEGIN,
     MSG_ROUND_RESULT, MSG_GAME_END, MSG_PONG,
+    MSG_YOUR_ROUND, MSG_IDENTITY_UPDATE,
 )
 
 log = logging.getLogger(__name__)
@@ -27,6 +28,7 @@ class GameClient(QThread):
     kicked           = pyqtSignal()
     game_started     = pyqtSignal(dict)   # settings dict
     round_begun      = pyqtSignal(dict)   # {round_number, total_rounds, video}
+    your_round       = pyqtSignal()       # it's your video — vote buttons disabled
     round_result     = pyqtSignal(dict)   # full result dict
     game_ended       = pyqtSignal(list)   # [LeaderboardEntry dict]
     connection_lost  = pyqtSignal(str)    # reason
@@ -63,6 +65,11 @@ class GameClient(QThread):
 
     def send_ready(self, ready: bool) -> None:
         self._queue({"type": MSG_PLAYER_READY, "ready": ready})
+
+    def send_identity(self, display_name: str, avatar_color: str) -> None:
+        self._queue({"type": MSG_IDENTITY_UPDATE,
+                     "display_name": display_name,
+                     "avatar_color": avatar_color})
 
     def send_answer(self, guessed_player_id: str, elapsed_ms: int) -> None:
         self._queue({"type": MSG_ANSWER,
@@ -145,6 +152,7 @@ class GameClient(QThread):
         elif mtype == MSG_PLAYER_KICKED:self.kicked.emit()
         elif mtype == MSG_GAME_START:   self.game_started.emit(msg.get("settings", {}))
         elif mtype == MSG_ROUND_BEGIN:  self.round_begun.emit(msg)
+        elif mtype == MSG_YOUR_ROUND:   self.your_round.emit()
         elif mtype == MSG_ROUND_RESULT: self.round_result.emit(msg)
         elif mtype == MSG_GAME_END:     self.game_ended.emit(msg.get("leaderboard", []))
         elif mtype == MSG_PONG:         pass

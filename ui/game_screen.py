@@ -1,6 +1,5 @@
 """Game screen: video display, choices, timer, per-round result, final leaderboard."""
 from __future__ import annotations
-import os
 import time
 from typing import Optional
 from PyQt6.QtWidgets import (
@@ -38,7 +37,7 @@ class GameScreen(QWidget):
         self._round_start:  float         = 0.0
         self._timer_total_ms = 15_000
         self._video_widget: Optional[VideoCard] = None
-        self._temp_video_path: Optional[str] = None
+
 
         self._tick_timer = QTimer(self)
         self._tick_timer.setInterval(100)
@@ -299,14 +298,6 @@ class GameScreen(QWidget):
         choices: list[Player],
     ) -> None:
         """Begin displaying a round (called by MainWindow from host or client data)."""
-        # Clean up temp video from previous round
-        if self._temp_video_path:
-            try:
-                os.remove(self._temp_video_path)
-            except Exception:
-                pass
-            self._temp_video_path = None
-
         self._answered    = False
         self._choices     = choices
         self._current_video = video
@@ -330,7 +321,6 @@ class GameScreen(QWidget):
         self._video_widget.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
-        self._video_widget.video_downloaded.connect(self._on_video_downloaded)
         self._video_area.addWidget(self._video_widget, stretch=1)
 
         # Rebuild vote buttons dynamically — one per player choice
@@ -392,6 +382,11 @@ class GameScreen(QWidget):
             self._tick_timer.start()
 
         self._show("round")
+
+    def set_my_video(self) -> None:
+        """Current video belongs to this player — disable all vote buttons."""
+        for btn in self._choice_btns:
+            btn.setEnabled(False)
 
     def show_round_result(self, result_msg: dict) -> None:
         """Display result from host broadcast."""
@@ -507,8 +502,6 @@ class GameScreen(QWidget):
             b.setEnabled(False)
         self.answer_submitted.emit("", self._timer_total_ms)
 
-    def _on_video_downloaded(self, path: str) -> None:
-        self._temp_video_path = path
 
 
 def _lbl(text: str, size: int = 13, bold: bool = True) -> QLabel:

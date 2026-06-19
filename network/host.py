@@ -12,6 +12,7 @@ from network.protocol import (
     MSG_JOIN_ACCEPT, MSG_JOIN_REJECT, MSG_LOBBY_UPDATE,
     MSG_PLAYER_KICKED, MSG_GAME_START, MSG_ROUND_BEGIN,
     MSG_ROUND_RESULT, MSG_GAME_END, MSG_PONG,
+    MSG_YOUR_ROUND, MSG_IDENTITY_UPDATE,
 )
 from utils.config import TCP_PORT_RANGE, MAX_PLAYERS, RELAY_URL
 
@@ -52,6 +53,7 @@ class GameHost(QThread):
     video_sync_received = pyqtSignal(str, list)     # player_id, [video dict]
     ready_changed       = pyqtSignal(str, bool)     # player_id, ready
     answer_received     = pyqtSignal(str, str, int) # player_id, guessed_player_id, elapsed_ms
+    identity_updated    = pyqtSignal(str, str, str) # player_id, display_name, avatar_color
     error_occurred      = pyqtSignal(str)
     relay_status        = pyqtSignal(bool, str)     # ok, message
 
@@ -253,6 +255,13 @@ class GameHost(QThread):
             elapsed = int(msg.get("elapsed_ms", 0))
             self.answer_received.emit(player_id, guessed, elapsed)
 
+        elif mtype == MSG_IDENTITY_UPDATE:
+            self.identity_updated.emit(
+                player_id,
+                msg.get("display_name", ""),
+                msg.get("avatar_color", ""),
+            )
+
         elif mtype == MSG_PING:
             conn.send({"type": MSG_PONG})
 
@@ -333,6 +342,9 @@ class GameHost(QThread):
             "answers":              answers,
             "scores":               scores,
         })
+
+    def send_your_round(self, player_id: str) -> None:
+        self._send_to(player_id, {"type": MSG_YOUR_ROUND})
 
     def broadcast_game_end(self, leaderboard: list[dict]) -> None:
         self.broadcast({"type": MSG_GAME_END, "leaderboard": leaderboard})

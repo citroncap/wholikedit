@@ -138,6 +138,7 @@ class MainWindow(QMainWindow):
         self._lobby_screen.kick_player_requested.connect(self._on_kick_player)
         self._lobby_screen.ready_toggled.connect(self._on_ready_toggled)
         self._lobby_screen.identity_changed.connect(self._on_identity_changed)
+        self._lobby_screen.relay_refresh_requested.connect(self._on_relay_refresh)
 
         # Game
         self._game_screen.answer_submitted.connect(self._on_answer_submitted)
@@ -190,6 +191,7 @@ class MainWindow(QMainWindow):
         self._host.video_sync_received.connect(self._on_video_sync_received)
         self._host.ready_changed.connect(self._on_ready_changed)
         self._host.answer_received.connect(self._on_remote_answer)
+        self._host.identity_updated.connect(self._on_identity_updated)
         self._host.relay_status.connect(self._lobby_screen.set_relay_status)
 
         tcp_port = self._host.start_server()
@@ -265,6 +267,7 @@ class MainWindow(QMainWindow):
         self._client.round_result.connect(self._on_round_result_client)
         self._client.game_ended.connect(self._on_game_ended_client)
         self._client.connection_lost.connect(self._on_connection_lost)
+        self._client.your_round.connect(self._game_screen.set_my_video)
 
         if host_ip == "RELAY":
             self._client.use_relay(room_code)
@@ -329,10 +332,11 @@ class MainWindow(QMainWindow):
     def _on_video_sync_received(self, player_id: str, videos: list) -> None:
         if self._game_svc:
             self._game_svc.add_player_videos(player_id, videos)
-        # Update video count in player object
         for p in self._players:
             if p.player_id == player_id:
                 p.video_count = len(videos)
+                if videos:
+                    p.tiktok_connected = True  # they have videos loaded regardless of OAuth
                 break
         self._lobby_screen.update_players(self._players)
         if self._host:
@@ -344,6 +348,10 @@ class MainWindow(QMainWindow):
                 p.is_ready = ready
                 break
         self._lobby_screen.update_players(self._players)
+
+    def _on_relay_refresh(self) -> None:
+        if self._host and self._room_code:
+            self._host.open_relay_slots(self._room_code)
 
     def _on_kick_player(self, player_id: str) -> None:
         if self._host:
@@ -383,9 +391,21 @@ class MainWindow(QMainWindow):
             if self._host:
                 self._host.broadcast_lobby([p.to_dict() for p in self._players])
         else:
-            # Client: send video sync again to re-announce identity
-            # (lobby will refresh from next broadcast_lobby from host)
+            # Client: notify host so it can broadcast the update to all players
+            if self._client:
+                self._client.send_identity(display_name, avatar_color)
             self._lobby_screen.update_players(self._players)
+
+    def _on_identity_updated(self, player_id: str, display_name: str, avatar_color: str) -> None:
+        """Host received an identity update from a client — rebroadcast to all."""
+        for p in self._players:
+            if p.player_id == player_id:
+                p.display_name = display_name
+                p.avatar_color = avatar_color
+                break
+        self._lobby_screen.update_players(self._players)
+        if self._host:
+            self._host.broadcast_lobby([p.to_dict() for p in self._players])
 
     # ── Game start (host) ─────────────────────────────────────────────────────
 
@@ -458,6 +478,15 @@ class MainWindow(QMainWindow):
             video=         video,
             choices=       choices,
         )
+
+        # Block vote for the video owner
+        owner_id = video.owner_player_id
+        if owner_id:
+            my_id = self._local_player.player_id
+            if owner_id == my_id:
+                self._game_screen.set_my_video()
+            elif self._host:
+                self._host.send_your_round(owner_id)
 
         # Auto-advance when timer expires (skipped when timer_seconds == 0 = no limit)
         if self._game_settings.timer_seconds > 0:
