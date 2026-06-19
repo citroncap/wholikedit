@@ -66,24 +66,12 @@ class VideoCard(QWidget):
             self._web.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             try:
                 from PyQt6.QtWebEngineCore import QWebEngineSettings
-                s = self._web.settings()
-                s.setAttribute(QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False)
-                s.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
+                self._web.settings().setAttribute(
+                    QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False
+                )
             except Exception:
                 pass
-            html = (
-                "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-                "<style>*{margin:0;padding:0}body{background:#000;overflow:hidden}</style>"
-                "</head><body>"
-                f"<blockquote class='tiktok-embed'"
-                f" cite='https://www.tiktok.com/@u/video/{vid_id}'"
-                f" data-video-id='{vid_id}'"
-                " style='max-width:100%;min-width:100%;'>"
-                "<section></section></blockquote>"
-                "<script async src='https://www.tiktok.com/embed.js'></script>"
-                "</body></html>"
-            )
-            self._web.setHtml(html, QUrl("https://www.tiktok.com/"))
+            self._web.load(QUrl(f"https://www.tiktok.com/embed/v2/{vid_id}"))
             layout.addWidget(self._web)
         else:
             # No WebEngine or no real video ID — gradient placeholder

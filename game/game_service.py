@@ -163,8 +163,11 @@ class GameService:
         points = 0
         if is_correct:
             timer_ms = self._settings.timer_seconds * 1000
-            remaining = max(0, timer_ms - elapsed_ms)
-            points = max(10, int(SCORE_BASE * remaining / timer_ms))
+            if timer_ms > 0:
+                remaining = max(0, timer_ms - elapsed_ms)
+                points = max(10, int(SCORE_BASE * remaining / timer_ms))
+            else:
+                points = SCORE_BASE
 
         answer = PlayerAnswer(
             player_id=player_id,

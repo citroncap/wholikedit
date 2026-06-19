@@ -395,9 +395,26 @@ class GameScreen(QWidget):
         self._show("round")
 
     def set_my_video(self) -> None:
-        """Current video belongs to this player — disable all vote buttons."""
-        for btn in self._choice_btns:
-            btn.setEnabled(False)
+        """Current video belongs to this player — remove vote buttons, show message."""
+        while self._vote_container.count():
+            item = self._vote_container.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self._choice_btns = []
+
+        title = QLabel("🎬  C'est ton like !")
+        title.setFont(QFont("Segoe UI", 18, QFont.Weight.ExtraBold))
+        title.setStyleSheet("color:#25F4EE;")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        sub = QLabel("Tout le monde essaie de deviner que c'est toi.")
+        sub.setWordWrap(True)
+        sub.setStyleSheet("color:#555; font-size:13px;")
+        sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self._vote_container.addWidget(title)
+        self._vote_container.addSpacing(6)
+        self._vote_container.addWidget(sub)
 
     def show_round_result(self, result_msg: dict) -> None:
         """Display result from host broadcast."""
