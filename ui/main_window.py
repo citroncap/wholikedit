@@ -356,6 +356,12 @@ class MainWindow(QMainWindow):
     def _on_ready_toggled(self, ready: bool) -> None:
         if self._client:
             self._client.send_ready(ready)
+        # Optimistic local update so rebuild doesn't flash "WAITING" before host acks
+        my_id = self._local_player.player_id
+        for p in self._players:
+            if p.player_id == my_id:
+                p.is_ready = ready
+                break
 
     def _on_identity_changed(self, display_name: str, avatar_color: str) -> None:
         """Player updated their name/color from the lobby identity panel."""
@@ -430,7 +436,7 @@ class MainWindow(QMainWindow):
         self._round_ended = False
         choices = self._game_svc.get_choices(video)
 
-        # Broadcast to clients (video without owner)
+        # Broadcast to clients (video without owner — video_url included for preview)
         if self._host:
             self._host.broadcast_round_begin(
                 round_number=  self._current_round_number,
@@ -442,6 +448,7 @@ class MainWindow(QMainWindow):
                     "author_username":video.author_username,
                     "view_count":     video.view_count,
                     "like_count":     video.like_count,
+                    "video_url":      video.video_url or "",
                 },
             )
 
@@ -452,11 +459,12 @@ class MainWindow(QMainWindow):
             choices=       choices,
         )
 
-        # Auto-advance when timer expires
-        QTimer.singleShot(
-            self._game_settings.timer_seconds * 1000 + 500,
-            self._host_timeout_check,
-        )
+        # Auto-advance when timer expires (skipped when timer_seconds == 0 = no limit)
+        if self._game_settings.timer_seconds > 0:
+            QTimer.singleShot(
+                self._game_settings.timer_seconds * 1000 + 500,
+                self._host_timeout_check,
+            )
 
     def _host_timeout_check(self) -> None:
         """Called after timer; end round if host hasn't already."""
@@ -571,6 +579,7 @@ class MainWindow(QMainWindow):
             author_username=video_dict.get("author_username", ""),
             view_count=     video_dict.get("view_count", 0),
             like_count=     video_dict.get("like_count", 0),
+            video_url=      video_dict.get("video_url", ""),
             owner_player_id="",  # hidden until reveal
         )
         choices = list(self._players)

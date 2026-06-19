@@ -111,26 +111,33 @@ class GameHost(QThread):
         """Connect to relay (70s timeout covers Render cold-start) then open per-slot threads."""
         from network.relay import relay_connect_host
 
-        # Probe slot 0 — open_timeout=70s lets Render's free tier cold-start (~60s)
         self.relay_status.emit(False, "⏳ Relay waking up… (may take ~60s first time)")
-        probe = relay_connect_host(room_code, 0)
+
+        _registered = threading.Event()
+
+        def _on_registered():
+            # Relay confirmed slot 0 is open — update UI and open remaining slots
+            self.relay_status.emit(True, "✅ Relay ready — friends can join with the room code")
+            _registered.set()
+            for slot in range(1, MAX_PLAYERS - 1):
+                t = threading.Thread(
+                    target=self._open_relay_slot,
+                    args=(room_code, slot),
+                    daemon=True,
+                )
+                t.start()
+            log.info("Relay slots open for room %s → %s", room_code, RELAY_URL)
+
+        _err: list[str] = []
+        probe = relay_connect_host(room_code, 0, on_registered=_on_registered, _err=_err)
 
         if probe is None:
-            log.warning("Relay unreachable after retries — internet play disabled")
-            self.relay_status.emit(False, "⚠️ Relay offline — internet play unavailable")
+            if not _registered.is_set():
+                detail = f"\n{_err[0]}" if _err else ""
+                self.relay_status.emit(False, f"⚠️ Relay offline — internet play unavailable{detail}")
             return
 
-        # Slot 0 is live — register it and open the remaining slots
-        self.relay_status.emit(True, "✅ Relay ready — friends can join with the room code")
         self._start_slot_thread(room_code, 0, probe)
-        for slot in range(1, MAX_PLAYERS - 1):
-            t = threading.Thread(
-                target=self._open_relay_slot,
-                args=(room_code, slot),
-                daemon=True,
-            )
-            t.start()
-        log.info("Relay slots open for room %s → %s", room_code, RELAY_URL)
 
     def _start_slot_thread(self, room_code: str, slot: int, stream) -> None:
         t = threading.Thread(

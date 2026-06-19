@@ -32,32 +32,21 @@ class PlayerCard(QFrame):
 
         # Avatar
         pix = make_avatar_pixmap(self._player.initials, 44, self._player.avatar_color)
-        av  = QLabel()
-        av.setPixmap(round_pixmap(pix, 44))
-        av.setFixedSize(44, 44)
-        row.addWidget(av)
+        self._av_lbl = QLabel()
+        self._av_lbl.setPixmap(round_pixmap(pix, 44))
+        self._av_lbl.setFixedSize(44, 44)
+        row.addWidget(self._av_lbl)
 
         # Name + status
         col = QVBoxLayout()
         col.setSpacing(3)
-        name = QLabel(self._player.display_name)
-        name.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        col.addWidget(name)
+        self._name_lbl = QLabel(self._player.display_name)
+        self._name_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        col.addWidget(self._name_lbl)
 
-        status_parts = []
-        if self._player.is_host:
-            status_parts.append("🎮 Host")
-        if self._player.tiktok_connected:
-            tt = self._player.tiktok_username or "TikTok"
-            status_parts.append(f"✅ @{tt}")
-            if self._player.video_count:
-                status_parts.append(f"{self._player.video_count} videos")
-        else:
-            status_parts.append("⚠️ No TikTok")
-
-        sub = QLabel("  ·  ".join(status_parts))
-        sub.setStyleSheet("color:#888;font-size:11px;")
-        col.addWidget(sub)
+        self._sub_lbl = QLabel(self._status_text(self._player))
+        self._sub_lbl.setStyleSheet("color:#888;font-size:11px;")
+        col.addWidget(self._sub_lbl)
         row.addLayout(col)
         row.addStretch()
 
@@ -77,6 +66,20 @@ class PlayerCard(QFrame):
             kick.clicked.connect(lambda: self.kick_requested.emit(self._player.player_id))
             row.addWidget(kick)
 
+    @staticmethod
+    def _status_text(player: "Player") -> str:
+        parts = []
+        if player.is_host:
+            parts.append("🎮 Host")
+        if player.tiktok_connected:
+            tt = player.tiktok_username or "TikTok"
+            parts.append(f"✅ @{tt}")
+            if player.video_count:
+                parts.append(f"{player.video_count} videos")
+        else:
+            parts.append("⚠️ No TikTok")
+        return "  ·  ".join(parts)
+
     def _set_ready(self, ready: bool) -> None:
         if ready:
             self._ready_lbl.setText("READY")
@@ -94,6 +97,10 @@ class PlayerCard(QFrame):
     def update_player(self, player: Player) -> None:
         self._player = player
         self._set_ready(player.is_ready)
+        self._name_lbl.setText(player.display_name)
+        self._sub_lbl.setText(self._status_text(player))
+        pix = make_avatar_pixmap(player.initials, 44, player.avatar_color)
+        self._av_lbl.setPixmap(round_pixmap(pix, 44))
 
 
 class LeaderboardRow(QFrame):

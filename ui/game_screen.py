@@ -1,5 +1,6 @@
 """Game screen: video display, choices, timer, per-round result, final leaderboard."""
 from __future__ import annotations
+import os
 import time
 from typing import Optional
 from PyQt6.QtWidgets import (
@@ -37,6 +38,7 @@ class GameScreen(QWidget):
         self._round_start:  float         = 0.0
         self._timer_total_ms = 15_000
         self._video_widget: Optional[VideoCard] = None
+        self._temp_video_path: Optional[str] = None
 
         self._tick_timer = QTimer(self)
         self._tick_timer.setInterval(100)
@@ -297,6 +299,14 @@ class GameScreen(QWidget):
         choices: list[Player],
     ) -> None:
         """Begin displaying a round (called by MainWindow from host or client data)."""
+        # Clean up temp video from previous round
+        if self._temp_video_path:
+            try:
+                os.remove(self._temp_video_path)
+            except Exception:
+                pass
+            self._temp_video_path = None
+
         self._answered    = False
         self._choices     = choices
         self._current_video = video
@@ -320,6 +330,7 @@ class GameScreen(QWidget):
         self._video_widget.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
+        self._video_widget.video_downloaded.connect(self._on_video_downloaded)
         self._video_area.addWidget(self._video_widget, stretch=1)
 
         # Rebuild vote buttons dynamically — one per player choice
@@ -333,32 +344,52 @@ class GameScreen(QWidget):
             btn = ChoiceButton()
             btn.player_id = p.player_id
             color = p.avatar_color or "#FE2C55"
-            btn.setText(f"  ⬤  {p.display_name}")
-            btn.setStyleSheet(f"""
-                QPushButton {{
-                    background:#1a1a1a; border:2px solid {color}55;
-                    border-radius:12px; padding:14px 20px;
-                    color:#fff; text-align:left;
-                    font-size:14px; font-weight:600;
-                }}
-                QPushButton:hover {{
-                    background:{color}22; border-color:{color};
-                }}
-                QPushButton:pressed {{ background:{color}44; }}
-            """)
-            btn.clicked.connect(lambda _checked, b=btn: self._on_choice(b))
+            is_self = p.player_id == self._my_player_id
+            label = f"  ⬤  {p.display_name}" + ("  (vous)" if is_self else "")
+            btn.setText(label)
+            if is_self:
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background:#111; border:2px solid {color}33;
+                        border-radius:12px; padding:14px 20px;
+                        color:#555; text-align:left;
+                        font-size:14px; font-weight:600;
+                    }}
+                """)
+                btn.setEnabled(False)
+            else:
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background:#1a1a1a; border:2px solid {color}55;
+                        border-radius:12px; padding:14px 20px;
+                        color:#fff; text-align:left;
+                        font-size:14px; font-weight:600;
+                    }}
+                    QPushButton:hover {{
+                        background:{color}22; border-color:{color};
+                    }}
+                    QPushButton:pressed {{ background:{color}44; }}
+                """)
+                btn.clicked.connect(lambda _checked, b=btn: self._on_choice(b))
             self._choice_btns.append(btn)
             self._vote_container.addWidget(btn)
 
         self._next_btn.setVisible(False)
 
-        # Reset timer
-        self._time_ms_left = self._timer_total_ms
-        self._timer_bar.setMaximum(self._timer_total_ms)
-        self._timer_bar.setValue(self._timer_total_ms)
-        self._timer_lbl.setText(str(self._timer_total_ms // 1000))
-        self._timer_lbl.setStyleSheet("color:#25F4EE;")
-        self._tick_timer.start()
+        # Timer — 0 means no limit
+        self._tick_timer.stop()
+        if self._timer_total_ms == 0:
+            self._timer_bar.setVisible(False)
+            self._timer_lbl.setText("∞")
+            self._timer_lbl.setStyleSheet("color:#25F4EE;")
+        else:
+            self._timer_bar.setVisible(True)
+            self._time_ms_left = self._timer_total_ms
+            self._timer_bar.setMaximum(self._timer_total_ms)
+            self._timer_bar.setValue(self._timer_total_ms)
+            self._timer_lbl.setText(str(self._timer_total_ms // 1000))
+            self._timer_lbl.setStyleSheet("color:#25F4EE;")
+            self._tick_timer.start()
 
         self._show("round")
 
@@ -475,6 +506,9 @@ class GameScreen(QWidget):
         for b in self._choice_btns:
             b.setEnabled(False)
         self.answer_submitted.emit("", self._timer_total_ms)
+
+    def _on_video_downloaded(self, path: str) -> None:
+        self._temp_video_path = path
 
 
 def _lbl(text: str, size: int = 13, bold: bool = True) -> QLabel:

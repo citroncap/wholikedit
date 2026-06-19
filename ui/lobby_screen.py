@@ -332,17 +332,26 @@ class LobbyScreen(QWidget):
         self._update_start_eligibility()
 
     def _rebuild_player_list(self) -> None:
-        # Clear existing cards
-        self._clear_players()
+        current_ids = {p.player_id for p in self._players}
+        # Remove cards for players who left
+        for pid in list(self._cards):
+            if pid not in current_ids:
+                card = self._cards.pop(pid)
+                self._players_vbox.removeWidget(card)
+                card.deleteLater()
 
         for p in self._players:
-            show_kick = self._is_host and p.player_id != self._my_player_id
-            card = PlayerCard(p, show_kick=show_kick)
-            card.kick_requested.connect(self.kick_player_requested)
-            self._players_vbox.insertWidget(
-                self._players_vbox.count() - 1, card
-            )
-            self._cards[p.player_id] = card
+            if p.player_id in self._cards:
+                # Update existing card in-place (no flicker)
+                self._cards[p.player_id].update_player(p)
+            else:
+                show_kick = self._is_host and p.player_id != self._my_player_id
+                card = PlayerCard(p, show_kick=show_kick)
+                card.kick_requested.connect(self.kick_player_requested)
+                self._players_vbox.insertWidget(
+                    self._players_vbox.count() - 1, card
+                )
+                self._cards[p.player_id] = card
 
         n = len(self._players)
         self._player_count_lbl.setText(f"Players  {n} / 8")

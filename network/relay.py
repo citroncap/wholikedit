@@ -50,10 +50,18 @@ class _WsStream:
             pass
 
 
-def relay_connect_host(room_code: str, slot: int):
+def relay_connect_host(room_code: str, slot: int, on_registered=None, _err: list | None = None):
     """Open a host relay slot and block until a joiner arrives.
+
+    on_registered(): called as soon as the relay confirms the slot is open,
+    before any joiner arrives — use it to update the lobby status.
+
     Returns a _WsStream ready for game traffic, or None on failure.
     open_timeout=70 gives Render's free tier enough time to cold-start (~60s).
+
+    Supports two server protocols:
+      New: server sends {"registered": true} immediately, then {"ok": true} on pair.
+      Old: server blocks and sends {"ok": true} only when joiner arrives.
     """
     from utils.config import RELAY_URL
     import websockets.sync.client
@@ -61,17 +69,35 @@ def relay_connect_host(room_code: str, slot: int):
     try:
         ws = websockets.sync.client.connect(RELAY_URL, open_timeout=70)
         ws.send(json.dumps({"role": "host", "code": room_code, "slot": slot}))
-        # Block until relay sends {"ok": true} (joiner was paired)
+
         raw = ws.recv()
         resp = json.loads(raw)
-        if not resp.get("ok"):
+
+        if resp.get("registered"):
+            # New two-message protocol: immediate ack, then wait for joiner
+            if on_registered:
+                on_registered()
+            raw = ws.recv()
+            resp = json.loads(raw)
+            if not resp.get("ok"):
+                ws.close()
+                return None
+        elif resp.get("ok"):
+            # Old single-message protocol: server blocked until joiner arrived
+            if on_registered:
+                on_registered()
+        else:
+            log.info("Relay slot %d unexpected first message: %s", slot, resp)
             ws.close()
             return None
+
         stream = _WsStream(ws)
         stream.settimeout(60.0)
         return stream
     except Exception as exc:
-        log.debug("Relay host slot %d error: %s", slot, exc)
+        log.info("Relay host slot %d failed: %s", slot, exc)
+        if _err is not None:
+            _err.append(str(exc))
         return None
 
 

@@ -1,17 +1,16 @@
 """
-WhoLikedIt relay server — WebSocket edition.
+WhoLikedIt relay server — aiohttp WebSocket edition.
 
 Works on Render.com free tier (HTTPS web service):
+  Build command: pip install aiohttp
   Start command: python relay_server.py
-  No build command needed.
 
-Protocol:
-  HOST connects, sends: {"role": "host", "code": "ABC123", "slot": 0}
-  JOINER connects, sends: {"role": "join", "code": "ABC123"}
+Render's health checks send HEAD / — aiohttp handles that transparently.
 
-  Relay pairs joiner with an available host slot.
-  After pairing, raw bytes flow both ways as binary WebSocket frames.
-  The game protocol (length-prefixed JSON) is transparent to the relay.
+Protocol (unchanged from client's perspective):
+  HOST sends: {"role": "host", "code": "ABC123", "slot": 0}
+  JOINER sends: {"role": "join", "code": "ABC123"}
+  After pairing, server sends {"ok": true} to both, then raw bytes flow.
 """
 import asyncio
 import json
@@ -19,52 +18,97 @@ import logging
 import os
 from collections import defaultdict
 
-import websockets
+from aiohttp import web, WSMsgType
 
 log = logging.getLogger(__name__)
 PORT = int(os.getenv("PORT", 8888))
 
-# slot_key ("CODE:0", "CODE:1"…) → queue of (ws, claimed_event)
+_SENTINEL = object()
+
+
+class _Slot:
+    """Queue-based bridge between two WebSocket handlers."""
+    def __init__(self):
+        self.h2j: asyncio.Queue = asyncio.Queue()
+        self.j2h: asyncio.Queue = asyncio.Queue()
+        self.ready = asyncio.Event()
+
+
+# slot_key ("CODE:0") → asyncio.Queue of _Slot
 _slots: dict[str, asyncio.Queue] = defaultdict(asyncio.Queue)
 
 
-async def _pipe(src, dst) -> None:
+async def _drain(src_ws, queue: asyncio.Queue) -> None:
+    """Read frames from a WebSocket and put them into a queue."""
     try:
-        async for msg in src:
-            await dst.send(msg)
+        async for msg in src_ws:
+            if msg.type in (WSMsgType.TEXT, WSMsgType.BINARY):
+                await queue.put(msg)
+            else:
+                break
     except Exception:
         pass
     finally:
-        try:
-            await dst.close()
-        except Exception:
-            pass
+        await queue.put(_SENTINEL)
 
 
-async def _handle(ws) -> None:
-    addr = ws.remote_address
+async def _fill(queue: asyncio.Queue, dst_ws) -> None:
+    """Read from a queue and forward frames to a WebSocket."""
     try:
-        raw = await asyncio.wait_for(ws.recv(), timeout=15)
-        data = json.loads(raw)
-        role = data["role"]
-        code = data["code"].strip().upper()
+        while True:
+            item = await queue.get()
+            if item is _SENTINEL:
+                break
+            if item.type == WSMsgType.TEXT:
+                await dst_ws.send_str(item.data)
+            elif item.type == WSMsgType.BINARY:
+                await dst_ws.send_bytes(item.data)
+    except Exception:
+        pass
+
+
+async def _handle(request: web.Request) -> web.StreamResponse:
+    # Render health checks: HEAD / or GET / without WebSocket upgrade
+    if request.headers.get("Upgrade", "").lower() != "websocket":
+        return web.Response(text="WhoLikedIt relay OK")
+
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+    addr = request.remote or "?"
+
+    try:
+        first = await asyncio.wait_for(ws.receive(), timeout=15)
+        if first.type != WSMsgType.TEXT:
+            return ws
+
+        data = json.loads(first.data)
+        role = data.get("role")
+        code = data.get("code", "").strip().upper()
 
         if role == "host":
-            slot     = int(data.get("slot", 0))
-            slot_key = f"{code}:{slot}"
-            event    = asyncio.Event()
-            await _slots[slot_key].put((ws, event))
-            log.info("Host slot ready: %s from %s", slot_key, addr)
+            slot_num = int(data.get("slot", 0))
+            key = f"{code}:{slot_num}"
+            s = _Slot()
+            await _slots[key].put(s)
+            log.info("Host slot ready: %s  peer=%s", key, addr)
+            # Immediately acknowledge so the host client knows the relay is up
+            await ws.send_str(json.dumps({"registered": True}))
+
             try:
-                await asyncio.wait_for(event.wait(), timeout=3600)
+                await asyncio.wait_for(s.ready.wait(), timeout=3600)
             except asyncio.TimeoutError:
                 try:
-                    _slots[slot_key].get_nowait()
+                    _slots[key].get_nowait()
                 except Exception:
                     pass
-                return
-            # Keep coroutine alive while JOIN side handles piping
-            await asyncio.sleep(7200)
+                return ws
+
+            # Joiner arrived — notify host client, then pipe via queues
+            await ws.send_str(json.dumps({"ok": True}))
+            await asyncio.gather(
+                _drain(ws, s.h2j),
+                _fill(s.j2h, ws),
+            )
 
         elif role == "join":
             for key in list(_slots.keys()):
@@ -73,27 +117,27 @@ async def _handle(ws) -> None:
                 q = _slots[key]
                 if q.empty():
                     continue
-                host_ws, event = await q.get()
+                s: _Slot = await q.get()
                 if q.empty():
                     _slots.pop(key, None)
-                event.set()
-                log.info("Paired joiner %s with slot %s", addr, key)
-                # Notify both sides
-                await host_ws.send(json.dumps({"ok": True}))
-                await ws.send(json.dumps({"ok": True}))
-                # Pipe game data transparently
+                s.ready.set()
+                log.info("Paired joiner  peer=%s  slot=%s", addr, key)
+                await ws.send_str(json.dumps({"ok": True}))
                 await asyncio.gather(
-                    _pipe(ws, host_ws),
-                    _pipe(host_ws, ws),
+                    _drain(ws, s.j2h),
+                    _fill(s.h2j, ws),
                 )
-                return
-            await ws.send(json.dumps({"ok": False, "error": "Room not found"}))
-            log.info("No slot for code %s (joiner %s)", code, addr)
+                return ws
+
+            await ws.send_str(json.dumps({"ok": False, "error": "Room not found"}))
+            log.info("No slot for code=%s  peer=%s", code, addr)
 
     except asyncio.TimeoutError:
-        log.debug("Timeout from %s", addr)
+        log.debug("Timeout  peer=%s", addr)
     except Exception as exc:
-        log.debug("Error from %s: %s", addr, exc)
+        log.debug("Error  peer=%s: %s", addr, exc)
+
+    return ws
 
 
 async def _main() -> None:
@@ -101,9 +145,14 @@ async def _main() -> None:
         level=logging.INFO,
         format="%(asctime)s  %(levelname)-7s  %(message)s",
     )
-    async with websockets.serve(_handle, "0.0.0.0", PORT):
-        log.info("WhoLikedIt relay listening on port %d (WebSocket)", PORT)
-        await asyncio.Future()  # run forever
+    app = web.Application()
+    app.router.add_route("*", "/", _handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    log.info("WhoLikedIt relay listening on port %d (aiohttp)", PORT)
+    await asyncio.Future()
 
 
 if __name__ == "__main__":

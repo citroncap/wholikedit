@@ -53,8 +53,8 @@ class HostScreen(QWidget):
 
         # Timer
         c_layout.addLayout(self._spin_row(
-            "Timer (seconds)", 5, 60, DEFAULT_TIMER_SEC,
-            "How long players have to answer each round",
+            "Timer (seconds)", 0, 120, DEFAULT_TIMER_SEC,
+            "Seconds per round — set to 0 for no time limit",
         ))
         self._timer_spin = self._last_spin
 
