@@ -22,12 +22,6 @@ _FORMAT = (
     "/best"
 )
 
-# Browsers to try for cookie extraction, in preference order.
-_BROWSERS = ("chrome", "edge", "firefox", "chromium", "brave", "opera")
-
-# Error keywords that indicate an auth/IP/geo block that cookies might fix.
-_AUTH_KEYWORDS = ("ip", "block", "forbidden", "access", "region", "private", "login")
-
 
 class VideoDownloader(QThread):
     """Downloads a single video URL to a temp directory.
@@ -75,7 +69,7 @@ class VideoDownloader(QThread):
                 actual_path = d.get("filename", "")
                 self.progress.emit(99)
 
-        base_opts = {
+        opts = {
             "format":         _FORMAT,
             "outtmpl":        str(self._tmp_dir / "round.%(ext)s"),
             "quiet":          True,
@@ -84,30 +78,17 @@ class VideoDownloader(QThread):
             "noplaylist":     True,
         }
 
-        # Attempt 1: no cookies.  On auth/IP failure, retry with each browser.
-        attempts: list[dict] = [{}]
-        attempts += [{"cookiesfrombrowser": (b,)} for b in _BROWSERS]
-
-        last_error = ""
-        for extra in attempts:
-            if self._stop:
-                return
-            actual_path = ""
-            opts = {**base_opts, **extra}
-            browser = extra.get("cookiesfrombrowser", ("",))[0] or "no-cookies"
-            try:
-                import yt_dlp as _ydlp
-                with _ydlp.YoutubeDL(opts) as ydl:
-                    ydl.download([self._url])
-                log.info("Download succeeded (cookies: %s)", browser)
-                break
-            except InterruptedError:
-                return
-            except Exception as exc:
-                last_error = str(exc)
-                log.warning("Download failed (cookies: %s): %s", browser, exc)
-                if not any(kw in last_error.lower() for kw in _AUTH_KEYWORDS):
-                    break  # not an auth issue — don't retry with cookies
+        try:
+            import yt_dlp as _ydlp
+            with _ydlp.YoutubeDL(opts) as ydl:
+                ydl.download([self._url])
+        except InterruptedError:
+            return
+        except Exception as exc:
+            log.warning("yt-dlp download error: %s", exc)
+            if not self._stop:
+                self.error.emit(str(exc))
+            return
 
         if self._stop:
             return
@@ -120,4 +101,4 @@ class VideoDownloader(QThread):
             self.progress.emit(100)
             self.finished.emit(actual_path)
         else:
-            self.error.emit(last_error or "Fichier téléchargé introuvable")
+            self.error.emit("Fichier téléchargé introuvable")
