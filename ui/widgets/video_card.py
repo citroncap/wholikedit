@@ -78,6 +78,9 @@ class VideoCard(QWidget):
     # ── Build ─────────────────────────────────────────────────────────────────
 
     def _build(self) -> None:
+        log.info("VideoCard init: yt-dlp=%s  multimedia=%s  url=%s",
+                 _YTDLP, _MULTIMEDIA, bool(self._video.video_url))
+
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -188,6 +191,18 @@ class VideoCard(QWidget):
         cl.addWidget(self._vol)
         cl.addStretch()
 
+        # Open local file in default player (fallback if QVideoWidget shows black)
+        self._open_file_btn = QPushButton("📂")
+        self._open_file_btn.setFixedSize(28, 28)
+        self._open_file_btn.setToolTip("Ouvrir le fichier vidéo")
+        self._open_file_btn.setStyleSheet(
+            "QPushButton{background:none;border:none;color:#444;font-size:13px;}"
+            "QPushButton:hover{color:#aaa;}"
+        )
+        self._open_file_btn.setVisible(False)   # shown only once file is downloaded
+        self._open_file_btn.clicked.connect(self._open_local_file)
+        cl.addWidget(self._open_file_btn)
+
         url = self._video.video_url
         if url:
             ob = QPushButton("↗")
@@ -265,8 +280,15 @@ class VideoCard(QWidget):
         self._dl_bar.setValue(pct)
         self._dl_pct.setText(f"{pct} %")
 
+    def _open_local_file(self) -> None:
+        if self._tmp_file and Path(self._tmp_file).exists():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(self._tmp_file))
+
     def _on_finished(self, filepath: str) -> None:
         self._tmp_file = filepath
+        sz = Path(filepath).stat().st_size if Path(filepath).exists() else 0
+        log.info("Download complete: %s  (%.1f MB)", filepath, sz / 1e6)
+        self._open_file_btn.setVisible(True)
         self._stack.setCurrentIndex(1)          # show player page first
         # Give QVideoWidget one frame to become visible before loading media;
         # calling play() before the widget is shown causes a black screen on Qt 6.7
@@ -294,8 +316,11 @@ class VideoCard(QWidget):
         self._player.errorOccurred.connect(
             lambda err, msg: log.error("QMediaPlayer error %s: %s", err, msg)
         )
-        # Play only once the media is fully loaded — avoids black screen
+        self._player.playbackStateChanged.connect(
+            lambda s: log.info("Player state → %s", s)
+        )
         self._player.mediaStatusChanged.connect(self._on_media_status)
+        log.info("Player loading: %s", filepath)
         self._player.setSource(QUrl.fromLocalFile(filepath))
 
     def _on_media_status(self, status: QMediaPlayer.MediaStatus) -> None:
