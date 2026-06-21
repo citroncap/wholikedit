@@ -7,6 +7,10 @@ import logging
 # Ensure the project root is in sys.path when run as a script or EXE
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Force WebEngine software rendering — GPU compositing causes black screens on
+# some drivers/machines. Must be set before any Qt import.
+os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu")
+
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt, QT_VERSION_STR, PYQT_VERSION_STR
 from PyQt6.QtGui import QFont

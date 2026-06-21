@@ -1,7 +1,9 @@
 """Video card shown during a game round.
 
-Downloads the TikTok video locally via yt-dlp then plays it with
-a local HTTP server + QWebEngineView (bypasses all file:// security restrictions).
+Player priority:
+  1. QMediaPlayer + QVideoWidget  (classic player, no extra dependencies)
+  2. QWebEngineView via localhost HTTP  (fallback if QMediaPlayer has no backend)
+  3. Gradient card + open-in-browser link  (last resort)
 """
 from __future__ import annotations
 import functools
@@ -12,25 +14,21 @@ import threading
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QProgressBar, QSizePolicy, QSlider, QStackedWidget,
+    QProgressBar, QSizePolicy, QStackedWidget,
 )
-from PyQt6.QtCore import Qt, QUrl
+from PyQt6.QtCore import Qt, QUrl, QTimer
 from PyQt6.QtGui import QFont, QColor, QPainter, QLinearGradient, QDesktopServices
 from models.game import GameVideo
 
 log = logging.getLogger(__name__)
 
-# ── Local HTTP server for video playback ─────────────────────────────────────
-# WebEngine has strict security rules for file:// URLs. Serving the temp
-# directory over localhost:PORT has zero restrictions and always works.
-
-_HTTP_PORT: int = 0          # 0 = not started yet; updated when server starts
+# ── Local HTTP server (fallback for WebEngine) ────────────────────────────────
+_HTTP_PORT: int = 0
 _http_server: socketserver.TCPServer | None = None
 _http_lock = threading.Lock()
 
 
 def _ensure_video_server(directory: Path) -> int:
-    """Start a one-shot HTTP server serving *directory*. Returns the port."""
     global _http_server, _HTTP_PORT
     with _http_lock:
         if _http_server is not None:
@@ -40,7 +38,6 @@ def _ensure_video_server(directory: Path) -> int:
                 http.server.SimpleHTTPRequestHandler,
                 directory=str(directory),
             )
-            # Port 0 → OS picks a free port automatically
             server = socketserver.TCPServer(("127.0.0.1", 0), handler)
             _HTTP_PORT = server.server_address[1]
             t = threading.Thread(target=server.serve_forever, daemon=True)
@@ -52,13 +49,7 @@ def _ensure_video_server(directory: Path) -> int:
     return _HTTP_PORT
 
 
-try:
-    from PyQt6.QtWebEngineWidgets import QWebEngineView
-    _WEBENGINE = True
-except ImportError as _e:
-    log.warning("PyQt6-WebEngine not available: %s", _e)
-    _WEBENGINE = False
-
+# ── Optional dependencies ─────────────────────────────────────────────────────
 try:
     from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
     from PyQt6.QtMultimediaWidgets import QVideoWidget
@@ -68,24 +59,24 @@ except ImportError as _e:
     _MULTIMEDIA = False
 
 try:
+    from PyQt6.QtWebEngineWidgets import QWebEngineView
+    _WEBENGINE = True
+except ImportError as _e:
+    log.warning("PyQt6-WebEngine not available: %s", _e)
+    _WEBENGINE = False
+
+try:
     import yt_dlp  # noqa: F401
     _YTDLP = True
 except ImportError as _e:
     log.warning("yt-dlp not available: %s", _e)
     _YTDLP = False
 
-# Cycling gradient pairs (index by hash of video_id)
 _GRADIENTS = [
-    ("#FE2C55", "#FF6B35"),
-    ("#25F4EE", "#0090FF"),
-    ("#9B59B6", "#FE2C55"),
-    ("#2ECC71", "#25F4EE"),
-    ("#F39C12", "#FE2C55"),
-    ("#3498DB", "#9B59B6"),
-    ("#E74C3C", "#F39C12"),
-    ("#1ABC9C", "#2ECC71"),
+    ("#FE2C55", "#FF6B35"), ("#25F4EE", "#0090FF"), ("#9B59B6", "#FE2C55"),
+    ("#2ECC71", "#25F4EE"), ("#F39C12", "#FE2C55"), ("#3498DB", "#9B59B6"),
+    ("#E74C3C", "#F39C12"), ("#1ABC9C", "#2ECC71"),
 ]
-
 _AlignC = Qt.AlignmentFlag.AlignCenter
 
 
@@ -94,7 +85,7 @@ class VideoCard(QWidget):
 
     Pages (QStackedWidget):
       0 – downloading  (progress bar)
-      1 – playing      (QVideoWidget + controls)
+      1 – playing      (player widget created at runtime)
       2 – fallback     (gradient card + open-in-browser button)
     """
 
@@ -111,17 +102,20 @@ class VideoCard(QWidget):
         self._color2    = color2
         self._player:   QMediaPlayer | None = None
         self._audio:    QAudioOutput | None = None
-        self._dl        = None          # VideoDownloader thread
+        self._dl        = None
         self._tmp_file: str = ""
         self._html_file: str = ""
+        self._uses_webengine = False
+        self._vid_view  = None          # created lazily in _init_player
+        self._player_area_layout: QVBoxLayout | None = None
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._build()
 
     # ── Build ─────────────────────────────────────────────────────────────────
 
     def _build(self) -> None:
-        log.info("VideoCard init: yt-dlp=%s  multimedia=%s  url=%s",
-                 _YTDLP, _MULTIMEDIA, bool(self._video.video_url))
+        log.info("VideoCard init: yt-dlp=%s  multimedia=%s  webengine=%s  url=%s",
+                 _YTDLP, _MULTIMEDIA, _WEBENGINE, bool(self._video.video_url))
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -135,7 +129,7 @@ class VideoCard(QWidget):
         self._stack.addWidget(self._make_fallback_page())   # 2
 
         url = self._video.video_url
-        if url and _YTDLP and (_WEBENGINE or _MULTIMEDIA):
+        if url and _YTDLP and (_MULTIMEDIA or _WEBENGINE):
             self._start_download(url)
             self._stack.setCurrentIndex(0)
         else:
@@ -148,7 +142,6 @@ class VideoCard(QWidget):
         v.setAlignment(_AlignC)
         v.setContentsMargins(24, 24, 24, 24)
         v.setSpacing(10)
-
         v.addStretch()
 
         lbl = QLabel("Téléchargement de la vidéo…")
@@ -197,23 +190,13 @@ class VideoCard(QWidget):
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
 
-        # Prefer WebEngine (Chromium has a built-in H.264 player that always works).
-        # Fall back to QVideoWidget only when WebEngine isn't installed.
-        self._uses_webengine = _WEBENGINE
-        if _WEBENGINE:
-            self._vid_view = QWebEngineView()
-            self._vid_view.setSizePolicy(
-                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-            )
-            v.addWidget(self._vid_view, 1)
-        elif _MULTIMEDIA:
-            self._vid_view = QVideoWidget()
-            self._vid_view.setSizePolicy(
-                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-            )
-            v.addWidget(self._vid_view, 1)
+        # The actual player widget is added here at play time (_init_player)
+        area = QWidget()
+        area.setStyleSheet("background:#000;")
+        self._player_area_layout = QVBoxLayout(area)
+        self._player_area_layout.setContentsMargins(0, 0, 0, 0)
+        v.addWidget(area, 1)
 
-        # Minimal control bar — WebEngine shows its own controls inside the player
         ctrl = QWidget()
         ctrl.setStyleSheet("background:#111;border-top:1px solid #1a1a1a;")
         ctrl.setFixedHeight(32)
@@ -270,22 +253,12 @@ class VideoCard(QWidget):
             btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(url)))
             v.addWidget(btn)
 
-        # Always show what's missing so the user knows what to install
         if not _YTDLP:
             lbl = QLabel("Installe yt-dlp pour voir les vidéos :\npip install yt-dlp")
             lbl.setAlignment(_AlignC)
             lbl.setStyleSheet(
                 "color:#FE2C55;font-size:10px;padding:4px 6px;"
                 "background:#1a0000;border-top:1px solid #330000;"
-            )
-            lbl.setWordWrap(True)
-            v.addWidget(lbl)
-        elif not _MULTIMEDIA:
-            lbl = QLabel("QtMultimedia manquant :\npip install PyQt6>=6.4")
-            lbl.setAlignment(_AlignC)
-            lbl.setStyleSheet(
-                "color:#F39C12;font-size:10px;padding:4px 6px;"
-                "background:#1a1000;border-top:1px solid #332200;"
             )
             lbl.setWordWrap(True)
             v.addWidget(lbl)
@@ -319,10 +292,7 @@ class VideoCard(QWidget):
         sz = Path(filepath).stat().st_size if Path(filepath).exists() else 0
         log.info("Download complete: %s  (%.1f MB)", filepath, sz / 1e6)
         self._open_file_btn.setVisible(True)
-        self._stack.setCurrentIndex(1)          # show player page first
-        # Give QVideoWidget one frame to become visible before loading media;
-        # calling play() before the widget is shown causes a black screen on Qt 6.7
-        from PyQt6.QtCore import QTimer
+        self._stack.setCurrentIndex(1)
         QTimer.singleShot(80, lambda: self._init_player(filepath))
 
     def _on_error(self, msg: str) -> None:
@@ -332,18 +302,61 @@ class VideoCard(QWidget):
     # ── Player ────────────────────────────────────────────────────────────────
 
     def _init_player(self, filepath: str) -> None:
-        log.info("Player loading: %s (webengine=%s)", filepath, self._uses_webengine)
-        if self._uses_webengine:
-            self._init_webengine_player(filepath)
-        elif _MULTIMEDIA:
+        log.info("Player loading: %s  (multimedia=%s webengine=%s)",
+                 filepath, _MULTIMEDIA, _WEBENGINE)
+        if _MULTIMEDIA:
             self._init_mediaplayer(filepath)
+        elif _WEBENGINE:
+            self._init_webengine_player(filepath)
+        else:
+            log.error("No player backend available")
+            self._stack.setCurrentIndex(2)
+
+    def _init_mediaplayer(self, filepath: str) -> None:
+        """Primary player: QMediaPlayer + QVideoWidget."""
+        self._vid_view = QVideoWidget()
+        self._vid_view.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self._player_area_layout.addWidget(self._vid_view)
+
+        self._audio = QAudioOutput()
+        self._audio.setVolume(0.8)
+        self._player = QMediaPlayer()
+        self._player.setAudioOutput(self._audio)
+        self._player.setVideoOutput(self._vid_view)
+        self._player.mediaStatusChanged.connect(self._on_media_status)
+        self._player.errorOccurred.connect(
+            lambda err, msg: self._on_mediaplayer_error(err, msg, filepath)
+        )
+        self._player.setSource(QUrl.fromLocalFile(filepath))
+        log.info("QMediaPlayer source set")
+
+    def _on_mediaplayer_error(self, err, msg: str, filepath: str) -> None:
+        log.error("QMediaPlayer error %s: %s", err, msg)
+        if _WEBENGINE:
+            log.info("Falling back to WebEngine")
+            # Clean up failed QMediaPlayer
+            if self._player:
+                self._player.stop()
+                self._player.setSource(QUrl())
+                self._player = None
+            self._audio = None
+            if self._vid_view is not None:
+                self._player_area_layout.removeWidget(self._vid_view)
+                self._vid_view.deleteLater()
+                self._vid_view = None
+            self._init_webengine_player(filepath)
 
     def _init_webengine_player(self, filepath: str) -> None:
-        """Serve video over localhost HTTP then load it in WebEngine.
+        """Fallback player: QWebEngineView via localhost HTTP."""
+        self._uses_webengine = True
+        self._vid_view = QWebEngineView()
+        self._vid_view.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self._player_area_layout.addWidget(self._vid_view)
 
-        WebEngine blocks file:// in many configs; HTTP on 127.0.0.1 has no
-        such restriction and always works for local files.
-        """
         try:
             from PyQt6.QtWebEngineCore import QWebEngineSettings
             self._vid_view.settings().setAttribute(
@@ -352,14 +365,13 @@ class VideoCard(QWidget):
         except Exception:
             pass
 
-        tmp_dir  = Path(filepath).parent
-        port     = _ensure_video_server(tmp_dir)
-
+        tmp_dir    = Path(filepath).parent
+        port       = _ensure_video_server(tmp_dir)
         video_name = Path(filepath).name
+
         html = (
             "<!DOCTYPE html><html><head>"
-            "<style>"
-            "*{margin:0;padding:0;box-sizing:border-box}"
+            "<style>*{margin:0;padding:0;box-sizing:border-box}"
             "html,body{width:100%;height:100%;background:#000;overflow:hidden}"
             "video{width:100%;height:100%;object-fit:contain}"
             "</style></head><body>"
@@ -378,25 +390,10 @@ class VideoCard(QWidget):
         )
         self._vid_view.load(url)
 
-    def _init_mediaplayer(self, filepath: str) -> None:
-        """Fallback: QMediaPlayer (requires WMF or FFmpeg Qt plugin)."""
-        self._audio = QAudioOutput()
-        self._audio.setVolume(0.8)
-        self._player = QMediaPlayer()
-        self._player.setAudioOutput(self._audio)
-        self._player.setVideoOutput(self._vid_view)
-        self._player.errorOccurred.connect(
-            lambda err, msg: log.error("QMediaPlayer error %s: %s", err, msg)
-        )
-        self._player.playbackStateChanged.connect(
-            lambda s: log.info("Player state → %s", s)
-        )
-        self._player.mediaStatusChanged.connect(self._on_media_status)
-        self._player.setSource(QUrl.fromLocalFile(filepath))
-
     def _on_media_status(self, status: QMediaPlayer.MediaStatus) -> None:
         if not self._player:
             return
+        log.info("QMediaPlayer status → %s", status)
         if status == QMediaPlayer.MediaStatus.LoadedMedia:
             self._player.play()
         elif status == QMediaPlayer.MediaStatus.EndOfMedia:
@@ -415,15 +412,18 @@ class VideoCard(QWidget):
                 self._dl.error.disconnect()
             except Exception:
                 pass
-        if self._uses_webengine and hasattr(self, "_vid_view"):
+
+        if self._uses_webengine and self._vid_view is not None:
             try:
                 self._vid_view.load(QUrl("about:blank"))
             except Exception:
                 pass
+
         if self._player:
             self._player.stop()
-            self._player.setSource(QUrl())   # release file handle
+            self._player.setSource(QUrl())
             self._player = None
+
         for attr in ("_tmp_file", "_html_file"):
             path = getattr(self, attr, "")
             if path:
@@ -437,8 +437,6 @@ class VideoCard(QWidget):
 # ── Gradient fallback card ────────────────────────────────────────────────────
 
 class _GradientPreview(QWidget):
-    """Gradient card showing author and description when video isn't available."""
-
     def __init__(self, video: GameVideo, c1: str, c2: str, parent=None) -> None:
         super().__init__(parent)
         self._video = video
