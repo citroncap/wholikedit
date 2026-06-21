@@ -51,11 +51,20 @@ def _ensure_video_server(directory: Path) -> int:
 
 # ── Optional dependencies ─────────────────────────────────────────────────────
 try:
-    from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+    from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput, QMediaFormat
     from PyQt6.QtMultimediaWidgets import QVideoWidget
-    _MULTIMEDIA = True
+    # Only enable multimedia if the backend actually supports video decoding.
+    # On machines without WMF (Windows N/KN), this returns an empty list.
+    _fmt = QMediaFormat()
+    _MULTIMEDIA = len(_fmt.supportedFileFormats(QMediaFormat.ConversionMode.Decode)) > 0
+    del _fmt
+    if not _MULTIMEDIA:
+        log.warning("No multimedia video formats found — QMediaPlayer disabled, using WebEngine")
 except ImportError as _e:
     log.warning("PyQt6 multimedia not available: %s", _e)
+    _MULTIMEDIA = False
+except Exception as _e:
+    log.warning("QMediaFormat backend check failed (%s) — QMediaPlayer disabled", _e)
     _MULTIMEDIA = False
 
 try:
@@ -340,33 +349,42 @@ class VideoCard(QWidget):
         """Fallback if QMediaPlayer silently failed (no backend — errorOccurred never fires)."""
         if not self._player or self._uses_webengine:
             return
-        status = self._player.mediaStatus()
+        try:
+            status = self._player.mediaStatus()
+        except Exception:
+            status = QMediaPlayer.MediaStatus.NoMedia
         if status in (
             QMediaPlayer.MediaStatus.NoMedia,
             QMediaPlayer.MediaStatus.InvalidMedia,
         ):
-            log.warning(
-                "QMediaPlayer stuck at %s after 800ms (no backend?) → WebEngine fallback",
-                status,
-            )
-            self._on_mediaplayer_error(
-                QMediaPlayer.Error.ResourceError, "Backend not available", filepath
-            )
+            log.warning("QMediaPlayer stuck at %s after 800ms → WebEngine fallback", status)
+            self._teardown_mediaplayer()
+            if _WEBENGINE:
+                self._init_webengine_player(filepath)
+
+    def _teardown_mediaplayer(self) -> None:
+        """Release QMediaPlayer/QVideoWidget without calling stop() (may crash with no backend)."""
+        try:
+            if self._player:
+                self._player.mediaStatusChanged.disconnect()
+                self._player.errorOccurred.disconnect()
+        except Exception:
+            pass
+        self._player = None
+        self._audio = None
+        if self._vid_view is not None:
+            try:
+                self._player_area_layout.removeWidget(self._vid_view)
+                self._vid_view.deleteLater()
+            except Exception:
+                pass
+            self._vid_view = None
 
     def _on_mediaplayer_error(self, err, msg: str, filepath: str) -> None:
         log.error("QMediaPlayer error %s: %s", err, msg)
         if _WEBENGINE:
             log.info("Falling back to WebEngine")
-            # Clean up failed QMediaPlayer
-            if self._player:
-                self._player.stop()
-                self._player.setSource(QUrl())
-                self._player = None
-            self._audio = None
-            if self._vid_view is not None:
-                self._player_area_layout.removeWidget(self._vid_view)
-                self._vid_view.deleteLater()
-                self._vid_view = None
+            self._teardown_mediaplayer()
             self._init_webengine_player(filepath)
 
     def _init_webengine_player(self, filepath: str) -> None:
