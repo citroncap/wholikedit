@@ -13,7 +13,6 @@ except ImportError:
     _YTDLP = False
 
 # Prefer H.264 (avc1) for maximum WebEngine / QMediaPlayer compatibility.
-# Falls back to any MP4, then to whatever yt-dlp deems best.
 _FORMAT = (
     "bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]"
     "/bestvideo[vcodec^=avc1]+bestaudio"
@@ -21,6 +20,13 @@ _FORMAT = (
     "/best[ext=mp4]"
     "/best"
 )
+
+# Browsers to try for cookie extraction when TikTok requires login.
+_BROWSERS = ("chrome", "edge", "firefox", "chromium", "brave")
+
+# Keywords that indicate auth is needed (not a permanent failure).
+# "IP blocked" is NOT included — that means video unavailable, cookies won't help.
+_AUTH_KEYWORDS = ("log in", "login", "comfortable", "authentication", "cookie")
 
 
 class VideoDownloader(QThread):
@@ -69,7 +75,7 @@ class VideoDownloader(QThread):
                 actual_path = d.get("filename", "")
                 self.progress.emit(99)
 
-        opts = {
+        base_opts = {
             "format":         _FORMAT,
             "outtmpl":        str(self._tmp_dir / "round.%(ext)s"),
             "quiet":          True,
@@ -78,17 +84,32 @@ class VideoDownloader(QThread):
             "noplaylist":     True,
         }
 
-        try:
-            import yt_dlp as _ydlp
-            with _ydlp.YoutubeDL(opts) as ydl:
-                ydl.download([self._url])
-        except InterruptedError:
-            return
-        except Exception as exc:
-            log.warning("yt-dlp download error: %s", exc)
-            if not self._stop:
-                self.error.emit(str(exc))
-            return
+        # First attempt without cookies. If TikTok requires login (age-restricted
+        # content), retry with cookies from each installed browser.
+        attempts: list[dict] = [{}]
+        attempts += [{"cookiesfrombrowser": (b,)} for b in _BROWSERS]
+
+        last_error = ""
+        for extra in attempts:
+            if self._stop:
+                return
+            actual_path = ""
+            opts = {**base_opts, **extra}
+            browser = extra.get("cookiesfrombrowser", ("",))[0] or "no-cookies"
+            try:
+                import yt_dlp as _ydlp
+                with _ydlp.YoutubeDL(opts) as ydl:
+                    ydl.download([self._url])
+                log.info("Download succeeded (cookies: %s)", browser)
+                break
+            except InterruptedError:
+                return
+            except Exception as exc:
+                last_error = str(exc)
+                log.warning("Download failed (cookies: %s): %s", browser, exc)
+                lower = last_error.lower()
+                if not any(kw in lower for kw in _AUTH_KEYWORDS):
+                    break  # permanent failure (video gone, IP blocked, etc.)
 
         if self._stop:
             return
@@ -101,4 +122,4 @@ class VideoDownloader(QThread):
             self.progress.emit(100)
             self.finished.emit(actual_path)
         else:
-            self.error.emit("Fichier téléchargé introuvable")
+            self.error.emit(last_error or "Fichier téléchargé introuvable")

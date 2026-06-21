@@ -1,10 +1,14 @@
 """Video card shown during a game round.
 
 Downloads the TikTok video locally via yt-dlp then plays it with
-Qt's native QMediaPlayer (no WebEngine required).
+a local HTTP server + QWebEngineView (bypasses all file:// security restrictions).
 """
 from __future__ import annotations
+import functools
+import http.server
 import logging
+import socketserver
+import threading
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -15,6 +19,38 @@ from PyQt6.QtGui import QFont, QColor, QPainter, QLinearGradient, QDesktopServic
 from models.game import GameVideo
 
 log = logging.getLogger(__name__)
+
+# ── Local HTTP server for video playback ─────────────────────────────────────
+# WebEngine has strict security rules for file:// URLs. Serving the temp
+# directory over localhost:PORT has zero restrictions and always works.
+
+_HTTP_PORT: int = 0          # 0 = not started yet; updated when server starts
+_http_server: socketserver.TCPServer | None = None
+_http_lock = threading.Lock()
+
+
+def _ensure_video_server(directory: Path) -> int:
+    """Start a one-shot HTTP server serving *directory*. Returns the port."""
+    global _http_server, _HTTP_PORT
+    with _http_lock:
+        if _http_server is not None:
+            return _HTTP_PORT
+        try:
+            handler = functools.partial(
+                http.server.SimpleHTTPRequestHandler,
+                directory=str(directory),
+            )
+            # Port 0 → OS picks a free port automatically
+            server = socketserver.TCPServer(("127.0.0.1", 0), handler)
+            _HTTP_PORT = server.server_address[1]
+            t = threading.Thread(target=server.serve_forever, daemon=True)
+            t.start()
+            _http_server = server
+            log.info("Video HTTP server started on 127.0.0.1:%d", _HTTP_PORT)
+        except Exception as exc:
+            log.warning("Could not start video HTTP server: %s", exc)
+    return _HTTP_PORT
+
 
 try:
     from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -303,7 +339,11 @@ class VideoCard(QWidget):
             self._init_mediaplayer(filepath)
 
     def _init_webengine_player(self, filepath: str) -> None:
-        """Load the local video directly in Chromium's native player."""
+        """Serve video over localhost HTTP then load it in WebEngine.
+
+        WebEngine blocks file:// in many configs; HTTP on 127.0.0.1 has no
+        such restriction and always works for local files.
+        """
         try:
             from PyQt6.QtWebEngineCore import QWebEngineSettings
             self._vid_view.settings().setAttribute(
@@ -312,11 +352,30 @@ class VideoCard(QWidget):
         except Exception:
             pass
 
-        self._vid_view.loadFinished.connect(
-            lambda ok: log.info("WebEngine load finished ok=%s", ok)
+        tmp_dir  = Path(filepath).parent
+        port     = _ensure_video_server(tmp_dir)
+
+        video_name = Path(filepath).name
+        html = (
+            "<!DOCTYPE html><html><head>"
+            "<style>"
+            "*{margin:0;padding:0;box-sizing:border-box}"
+            "html,body{width:100%;height:100%;background:#000;overflow:hidden}"
+            "video{width:100%;height:100%;object-fit:contain}"
+            "</style></head><body>"
+            f"<video id='v' src='{video_name}' autoplay loop playsinline controls></video>"
+            "<script>document.getElementById('v').play().catch(()=>{})</script>"
+            "</body></html>"
         )
-        url = QUrl.fromLocalFile(filepath)
+        html_path = tmp_dir / "player.html"
+        html_path.write_text(html, encoding="utf-8")
+        self._html_file = str(html_path)
+
+        url = QUrl(f"http://127.0.0.1:{port}/player.html")
         log.info("WebEngine loading: %s", url.toString())
+        self._vid_view.loadFinished.connect(
+            lambda ok: log.info("WebEngine loadFinished ok=%s", ok)
+        )
         self._vid_view.load(url)
 
     def _init_mediaplayer(self, filepath: str) -> None:
