@@ -1,8 +1,8 @@
 """Video card shown during a game round.
 
 Player priority:
-  1. QMediaPlayer + QVideoWidget  (classic player, no extra dependencies)
-  2. QWebEngineView via localhost HTTP  (fallback if QMediaPlayer has no backend)
+  1. QMediaPlayer + QVideoWidget  (requires WMF on Windows — install Media Feature Pack)
+  2. QWebEngineView via localhost HTTP  (fallback if QMediaPlayer errors)
   3. Gradient card + open-in-browser link  (last resort)
 """
 from __future__ import annotations
@@ -304,12 +304,10 @@ class VideoCard(QWidget):
     def _init_player(self, filepath: str) -> None:
         log.info("Player loading: %s  (multimedia=%s webengine=%s)",
                  filepath, _MULTIMEDIA, _WEBENGINE)
-        # WebEngine first: QMediaPlayer fails on machines without WMF/FFmpeg backend.
-        # WebEngine (Chromium) plays H.264 and HEVC reliably with --disable-gpu.
-        if _WEBENGINE:
-            self._init_webengine_player(filepath)
-        elif _MULTIMEDIA:
+        if _MULTIMEDIA:
             self._init_mediaplayer(filepath)
+        elif _WEBENGINE:
+            self._init_webengine_player(filepath)
         else:
             log.error("No player backend available")
             self._stack.setCurrentIndex(2)
