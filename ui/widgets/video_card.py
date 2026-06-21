@@ -331,6 +331,27 @@ class VideoCard(QWidget):
         )
         self._player.setSource(QUrl.fromLocalFile(filepath))
         log.info("QMediaPlayer source set")
+        # When no multimedia backend is installed, Qt prints "No QtMultimedia backends
+        # found" to stderr but errorOccurred never fires (silent failure).
+        # Detect this by checking if the player is still in NoMedia after 800ms.
+        QTimer.singleShot(800, lambda: self._mediaplayer_timeout_check(filepath))
+
+    def _mediaplayer_timeout_check(self, filepath: str) -> None:
+        """Fallback if QMediaPlayer silently failed (no backend — errorOccurred never fires)."""
+        if not self._player or self._uses_webengine:
+            return
+        status = self._player.mediaStatus()
+        if status in (
+            QMediaPlayer.MediaStatus.NoMedia,
+            QMediaPlayer.MediaStatus.InvalidMedia,
+        ):
+            log.warning(
+                "QMediaPlayer stuck at %s after 800ms (no backend?) → WebEngine fallback",
+                status,
+            )
+            self._on_mediaplayer_error(
+                QMediaPlayer.Error.ResourceError, "Backend not available", filepath
+            )
 
     def _on_mediaplayer_error(self, err, msg: str, filepath: str) -> None:
         log.error("QMediaPlayer error %s: %s", err, msg)
