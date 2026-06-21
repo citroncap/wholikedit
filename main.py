@@ -7,10 +7,6 @@ import logging
 # Ensure the project root is in sys.path when run as a script or EXE
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Must be before QApplication — allows WebEngine to autoplay without user gesture
-if "--autoplay-policy" not in " ".join(sys.argv):
-    sys.argv += ["--autoplay-policy=no-user-gesture-required"]
-
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt, QT_VERSION_STR, PYQT_VERSION_STR
 from PyQt6.QtGui import QFont
@@ -49,24 +45,6 @@ def main() -> None:
     # Default font
     font = QFont("Segoe UI", 10)
     app.setFont(font)
-
-    # Configure WebEngine profile before any view is created
-    try:
-        from PyQt6.QtWebEngineCore import QWebEngineProfile
-        profile = QWebEngineProfile.defaultProfile()
-        # Desktop Chrome UA — mobile UA triggers TikTok's "Open in App" redirect
-        profile.setHttpUserAgent(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        )
-        # Persist cookies so TikTok session survives between rounds
-        profile.setPersistentStoragePath(str(DATA_DIR / "webengine"))
-        profile.setCachePath(str(DATA_DIR / "webengine_cache"))
-        profile.setPersistentCookiesPolicy(
-            QWebEngineProfile.PersistentCookiesPolicy.AllowPersistentCookies
-        )
-    except Exception:
-        pass
 
     # Initialize database
     db = DatabaseManager()

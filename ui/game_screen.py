@@ -319,9 +319,10 @@ class GameScreen(QWidget):
         me_score = self._scores.get(self._my_player_id, 0)
         self._score_lbl.setText(f"Score: {format_score(me_score)}")
 
-        # Refresh video card
+        # Refresh video card — stop player and delete temp file first
         if self._video_widget:
             self._video_area.removeWidget(self._video_widget)
+            self._video_widget.cleanup()
             self._video_widget.deleteLater()
             self._video_widget = None
 
@@ -501,6 +502,8 @@ class GameScreen(QWidget):
 
     def show_final_leaderboard(self, entries: list[LeaderboardEntry]) -> None:
         self._auto_next_timer.stop()
+        if self._video_widget:
+            self._video_widget.cleanup()
         # Clear old entries
         while self._lb_vbox.count() > 1:
             item = self._lb_vbox.takeAt(0)
