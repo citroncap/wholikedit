@@ -50,6 +50,24 @@ def main() -> None:
     font = QFont("Segoe UI", 10)
     app.setFont(font)
 
+    # Configure WebEngine profile before any view is created
+    try:
+        from PyQt6.QtWebEngineCore import QWebEngineProfile
+        profile = QWebEngineProfile.defaultProfile()
+        # Mobile Chrome UA → TikTok renders its vertical mobile layout (fits 360 px)
+        profile.setHttpUserAgent(
+            "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+        )
+        # Persist cookies so TikTok session survives between rounds
+        profile.setPersistentStoragePath(str(DATA_DIR / "webengine"))
+        profile.setCachePath(str(DATA_DIR / "webengine_cache"))
+        profile.setPersistentCookiesPolicy(
+            QWebEngineProfile.PersistentCookiesPolicy.AllowPersistentCookies
+        )
+    except Exception:
+        pass
+
     # Initialize database
     db = DatabaseManager()
     db.initialize()
