@@ -12,6 +12,22 @@ try:
 except ImportError:
     _YTDLP = False
 
+# Prefer H.264 (avc1) for maximum WebEngine / QMediaPlayer compatibility.
+# Falls back to any MP4, then to whatever yt-dlp deems best.
+_FORMAT = (
+    "bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]"
+    "/bestvideo[vcodec^=avc1]+bestaudio"
+    "/best[vcodec^=avc1][ext=mp4]"
+    "/best[ext=mp4]"
+    "/best"
+)
+
+# Browsers to try for cookie extraction, in preference order.
+_BROWSERS = ("chrome", "edge", "firefox", "chromium", "brave", "opera")
+
+# Error keywords that indicate an auth/IP/geo block that cookies might fix.
+_AUTH_KEYWORDS = ("ip", "block", "forbidden", "access", "region", "private", "login")
+
 
 class VideoDownloader(QThread):
     """Downloads a single video URL to a temp directory.
@@ -37,7 +53,6 @@ class VideoDownloader(QThread):
             self.error.emit("yt-dlp non installé — lance : pip install yt-dlp")
             return
 
-        # Clean up any leftover file from a previous round
         for old in self._tmp_dir.glob("round.*"):
             try:
                 old.unlink()
@@ -60,8 +75,8 @@ class VideoDownloader(QThread):
                 actual_path = d.get("filename", "")
                 self.progress.emit(99)
 
-        opts = {
-            "format":         "best[ext=mp4]/best",
+        base_opts = {
+            "format":         _FORMAT,
             "outtmpl":        str(self._tmp_dir / "round.%(ext)s"),
             "quiet":          True,
             "no_warnings":    True,
@@ -69,22 +84,34 @@ class VideoDownloader(QThread):
             "noplaylist":     True,
         }
 
-        try:
-            import yt_dlp as _ydlp
-            with _ydlp.YoutubeDL(opts) as ydl:
-                ydl.download([self._url])
-        except InterruptedError:
-            return
-        except Exception as exc:
-            log.error("yt-dlp download error: %s", exc)
-            if not self._stop:
-                self.error.emit(str(exc))
-            return
+        # Attempt 1: no cookies.  On auth/IP failure, retry with each browser.
+        attempts: list[dict] = [{}]
+        attempts += [{"cookiesfrombrowser": (b,)} for b in _BROWSERS]
+
+        last_error = ""
+        for extra in attempts:
+            if self._stop:
+                return
+            actual_path = ""
+            opts = {**base_opts, **extra}
+            browser = extra.get("cookiesfrombrowser", ("",))[0] or "no-cookies"
+            try:
+                import yt_dlp as _ydlp
+                with _ydlp.YoutubeDL(opts) as ydl:
+                    ydl.download([self._url])
+                log.info("Download succeeded (cookies: %s)", browser)
+                break
+            except InterruptedError:
+                return
+            except Exception as exc:
+                last_error = str(exc)
+                log.warning("Download failed (cookies: %s): %s", browser, exc)
+                if not any(kw in last_error.lower() for kw in _AUTH_KEYWORDS):
+                    break  # not an auth issue — don't retry with cookies
 
         if self._stop:
             return
 
-        # Resolve the actual path (yt-dlp adds the extension)
         if not actual_path or not Path(actual_path).exists():
             files = list(self._tmp_dir.glob("round.*"))
             actual_path = str(files[0]) if files else ""
@@ -93,4 +120,4 @@ class VideoDownloader(QThread):
             self.progress.emit(100)
             self.finished.emit(actual_path)
         else:
-            self.error.emit("Fichier téléchargé introuvable")
+            self.error.emit(last_error or "Fichier téléchargé introuvable")
