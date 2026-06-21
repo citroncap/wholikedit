@@ -267,8 +267,11 @@ class VideoCard(QWidget):
 
     def _on_finished(self, filepath: str) -> None:
         self._tmp_file = filepath
-        self._init_player(filepath)
-        self._stack.setCurrentIndex(1)
+        self._stack.setCurrentIndex(1)          # show player page first
+        # Give QVideoWidget one frame to become visible before loading media;
+        # calling play() before the widget is shown causes a black screen on Qt 6.7
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(80, lambda: self._init_player(filepath))
 
     def _on_error(self, msg: str) -> None:
         log.warning("Video download error: %s", msg)
@@ -288,12 +291,19 @@ class VideoCard(QWidget):
         self._player = QMediaPlayer()
         self._player.setAudioOutput(self._audio)
         self._player.setVideoOutput(self._vid_view)
-        self._player.setSource(QUrl.fromLocalFile(filepath))
+        self._player.errorOccurred.connect(
+            lambda err, msg: log.error("QMediaPlayer error %s: %s", err, msg)
+        )
+        # Play only once the media is fully loaded — avoids black screen
         self._player.mediaStatusChanged.connect(self._on_media_status)
-        self._player.play()
+        self._player.setSource(QUrl.fromLocalFile(filepath))
 
     def _on_media_status(self, status: QMediaPlayer.MediaStatus) -> None:
-        if self._player and status == QMediaPlayer.MediaStatus.EndOfMedia:
+        if not self._player:
+            return
+        if status == QMediaPlayer.MediaStatus.LoadedMedia:
+            self._player.play()
+        elif status == QMediaPlayer.MediaStatus.EndOfMedia:
             self._player.setPosition(0)
             self._player.play()
 
