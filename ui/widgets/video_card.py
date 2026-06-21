@@ -77,6 +77,7 @@ class VideoCard(QWidget):
         self._audio:    QAudioOutput | None = None
         self._dl        = None          # VideoDownloader thread
         self._tmp_file: str = ""
+        self._html_file: str = ""
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._build()
 
@@ -305,25 +306,32 @@ class VideoCard(QWidget):
         """Load the local MP4 in a Chromium page — bypasses missing WMF/FFmpeg backend."""
         try:
             from PyQt6.QtWebEngineCore import QWebEngineSettings
-            self._vid_view.settings().setAttribute(
+            settings = self._vid_view.settings()
+            settings.setAttribute(
                 QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False
+            )
+            settings.setAttribute(
+                QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True
             )
         except Exception:
             pass
-        # Build a minimal HTML page that autoplays the local video file
-        file_url = QUrl.fromLocalFile(filepath).toString()
-        html = (
+        # Write a real HTML file so the page gets a file:// origin instead of
+        # null-origin. Chromium blocks local file:// resource loading from null-origin
+        # pages (created by setHtml), which causes the black screen.
+        video_name = Path(filepath).name
+        html_path = Path(filepath).parent / "player.html"
+        html_path.write_text(
             "<!DOCTYPE html><html><head>"
-            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-            "<style>"
-            "*{margin:0;padding:0;box-sizing:border-box}"
+            "<style>*{margin:0;padding:0;box-sizing:border-box}"
             "html,body{width:100%;height:100%;background:#000;overflow:hidden}"
             "video{width:100%;height:100%;object-fit:contain}"
             "</style></head><body>"
-            f"<video src='{file_url}' autoplay loop playsinline></video>"
-            "</body></html>"
+            f"<video src='{video_name}' autoplay loop playsinline></video>"
+            "</body></html>",
+            encoding="utf-8",
         )
-        self._vid_view.setHtml(html, QUrl.fromLocalFile(filepath))
+        self._html_file = str(html_path)
+        self._vid_view.load(QUrl.fromLocalFile(self._html_file))
 
     def _init_mediaplayer(self, filepath: str) -> None:
         """Fallback: QMediaPlayer (requires WMF or FFmpeg Qt plugin)."""
@@ -371,12 +379,14 @@ class VideoCard(QWidget):
             self._player.stop()
             self._player.setSource(QUrl())   # release file handle
             self._player = None
-        if self._tmp_file:
-            try:
-                Path(self._tmp_file).unlink(missing_ok=True)
-            except OSError:
-                pass
-            self._tmp_file = ""
+        for attr in ("_tmp_file", "_html_file"):
+            path = getattr(self, attr, "")
+            if path:
+                try:
+                    Path(path).unlink(missing_ok=True)
+                except OSError:
+                    pass
+                setattr(self, attr, "")
 
 
 # ── Gradient fallback card ────────────────────────────────────────────────────
