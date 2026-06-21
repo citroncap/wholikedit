@@ -220,10 +220,25 @@ class VideoCard(QWidget):
             )
             btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(url)))
             v.addWidget(btn)
-        elif not _YTDLP:
-            lbl = QLabel("pip install yt-dlp  pour lire les vidéos")
+
+        # Always show what's missing so the user knows what to install
+        if not _YTDLP:
+            lbl = QLabel("Installe yt-dlp pour voir les vidéos :\npip install yt-dlp")
             lbl.setAlignment(_AlignC)
-            lbl.setStyleSheet("color:#444;font-size:10px;padding:6px;")
+            lbl.setStyleSheet(
+                "color:#FE2C55;font-size:10px;padding:4px 6px;"
+                "background:#1a0000;border-top:1px solid #330000;"
+            )
+            lbl.setWordWrap(True)
+            v.addWidget(lbl)
+        elif not _MULTIMEDIA:
+            lbl = QLabel("QtMultimedia manquant :\npip install PyQt6>=6.4")
+            lbl.setAlignment(_AlignC)
+            lbl.setStyleSheet(
+                "color:#F39C12;font-size:10px;padding:4px 6px;"
+                "background:#1a1000;border-top:1px solid #332200;"
+            )
+            lbl.setWordWrap(True)
             v.addWidget(lbl)
 
         return page
