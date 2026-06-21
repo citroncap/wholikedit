@@ -40,7 +40,7 @@ RELAY_URL = "wss://wholikedit.onrender.com"
 
 # ── Game defaults ─────────────────────────────────────────────────────────────
 DEFAULT_ROUNDS       = 10
-DEFAULT_TIMER_SEC    = 15
+DEFAULT_TIMER_SEC    = 0
 DEFAULT_VIDEO_COUNT  = 20
 SCORE_BASE           = 1000
 

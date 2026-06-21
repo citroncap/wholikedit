@@ -140,9 +140,10 @@ class GameScreen(QWidget):
         left_col.setSizePolicy(
             QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding
         )
+        left_col.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self._video_area = QVBoxLayout(left_col)
         self._video_area.setContentsMargins(0, 0, 0, 0)
-        self._video_area.setSpacing(8)
+        self._video_area.setSpacing(0)
         cl.addWidget(left_col)
 
         # Right: question + choices
@@ -413,7 +414,6 @@ class GameScreen(QWidget):
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self._vote_container.addWidget(title)
-        self._vote_container.addSpacing(6)
         self._vote_container.addWidget(sub)
 
     def show_round_result(self, result_msg: dict) -> None:
@@ -478,7 +478,7 @@ class GameScreen(QWidget):
         self._score_summary.setText("\n".join(lines))
 
         # Auto-advance countdown (host drives, clients see countdown only)
-        self._auto_next_count = 4
+        self._auto_next_count = 3
         self._res_countdown.setText(f"Round suivant dans {self._auto_next_count}…")
         self._res_next.setVisible(self._is_host)
         self._auto_next_timer.start()

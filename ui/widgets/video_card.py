@@ -64,13 +64,28 @@ class VideoCard(QWidget):
         if vid_id and _WEBENGINE:
             self._web = QWebEngineView()
             self._web.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            self._web.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             try:
-                from PyQt6.QtWebEngineCore import QWebEngineSettings
+                from PyQt6.QtWebEngineCore import QWebEngineSettings, QWebEngineScript
                 self._web.settings().setAttribute(
                     QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False
                 )
+                # Polyfill TikTok globals that embed.js expects — prevents 'prod' TypeError
+                polyfill = QWebEngineScript()
+                polyfill.setName("tiktok_polyfill")
+                polyfill.setSourceCode(
+                    "window.TikTok=window.TikTok||{};"
+                    "if(window.TikTok.prod===undefined)window.TikTok.prod=false;"
+                    "window.__SAGI__=window.__SAGI__||{};"
+                    "if(window.__SAGI__.prod===undefined)window.__SAGI__.prod=false;"
+                )
+                polyfill.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
+                polyfill.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
+                self._web.page().scripts().insert(polyfill)
             except Exception:
                 pass
+            # Give focus to the WebEngine once loaded so clicks reach TikTok's player
+            self._web.loadFinished.connect(lambda _ok: self._web.setFocus())
             self._web.load(QUrl(f"https://www.tiktok.com/embed/v2/{vid_id}"))
             layout.addWidget(self._web)
         else:

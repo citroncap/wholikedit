@@ -507,21 +507,29 @@ class MainWindow(QMainWindow):
     def _on_remote_answer(
         self, player_id: str, guessed_id: str, elapsed_ms: int
     ) -> None:
-        if self._host_ctrl:
-            self._host_ctrl.on_answer_received(player_id, guessed_id, elapsed_ms)
-        if not self._round_ended and self._game_svc and self._game_svc.all_answered():
-            self._host_end_round()
+        log.info("Remote answer from %s (guessed=%s)", player_id, guessed_id)
+        try:
+            if self._host_ctrl:
+                self._host_ctrl.on_answer_received(player_id, guessed_id, elapsed_ms)
+            if not self._round_ended and self._game_svc and self._game_svc.all_answered():
+                log.info("All answered → ending round")
+                self._host_end_round()
+        except Exception:
+            log.exception("Error processing remote answer")
 
     def _on_answer_submitted(self, guessed_id: str, elapsed_ms: int) -> None:
         my_id = self._local_player.player_id
         if self._is_host:
-            # Host records their own answer locally
-            if self._host_ctrl:
-                self._host_ctrl.on_answer_received(my_id, guessed_id, elapsed_ms)
-            if not self._round_ended and self._game_svc and self._game_svc.all_answered():
-                self._host_end_round()
+            log.info("Host answer (guessed=%s)", guessed_id)
+            try:
+                if self._host_ctrl:
+                    self._host_ctrl.on_answer_received(my_id, guessed_id, elapsed_ms)
+                if not self._round_ended and self._game_svc and self._game_svc.all_answered():
+                    log.info("All answered → ending round")
+                    self._host_end_round()
+            except Exception:
+                log.exception("Error processing host answer")
         else:
-            # Client sends answer over network
             if self._client:
                 self._client.send_answer(guessed_id, elapsed_ms)
 
