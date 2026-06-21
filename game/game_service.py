@@ -73,14 +73,20 @@ class GameService:
         for vlist in by_player.values():
             random.shuffle(vlist)
 
+        # Adjust total_rounds so each player contributes the same number of videos.
+        # e.g. 2 players × 10 rounds = 5 each; 3 players × 10 rounds → 9 rounds (3 each).
+        n_players = len(by_player)
+        rounds_per_player = max(1, self._settings.total_rounds // n_players)
+        target = rounds_per_player * n_players
+
         # Round-robin interleave so every player contributes equally
         player_order = list(by_player.keys())
         random.shuffle(player_order)
         result: list[GameVideo] = []
-        while len(result) < self._settings.total_rounds:
+        while len(result) < target:
             added_any = False
             for pid in player_order:
-                if by_player[pid] and len(result) < self._settings.total_rounds:
+                if by_player[pid] and len(result) < target:
                     result.append(by_player[pid].pop(0))
                     added_any = True
             if not added_any:
@@ -89,8 +95,8 @@ class GameService:
         random.shuffle(result)  # final shuffle hides the interleave pattern
         self._rounds = result
         log.info(
-            "Built %d rounds from %d players (%d total videos)",
-            len(self._rounds), len(by_player), len(self._pool),
+            "Built %d rounds from %d players (%d total videos) — %d per player",
+            len(self._rounds), n_players, len(self._pool), rounds_per_player,
         )
         return len(self._rounds)
 
@@ -184,7 +190,14 @@ class GameService:
         video = self.current_video()
         owner_id = video.owner_player_id if video else ""
         eligible = sum(1 for p in self._players if p.player_id != owner_id)
-        return len(self._answers) >= max(1, eligible)
+        answered = len(self._answers)
+        needed   = max(1, eligible)
+        log.info(
+            "all_answered: players=%d owner=%s eligible=%d answered=%d needed=%d → %s",
+            len(self._players), owner_id[:8] if owner_id else "?",
+            eligible, answered, needed, answered >= needed,
+        )
+        return answered >= needed
 
     def end_round(self) -> RoundResult:
         video  = self.current_video()

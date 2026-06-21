@@ -304,10 +304,12 @@ class VideoCard(QWidget):
     def _init_player(self, filepath: str) -> None:
         log.info("Player loading: %s  (multimedia=%s webengine=%s)",
                  filepath, _MULTIMEDIA, _WEBENGINE)
-        if _MULTIMEDIA:
-            self._init_mediaplayer(filepath)
-        elif _WEBENGINE:
+        # WebEngine first: QMediaPlayer fails on machines without WMF/FFmpeg backend.
+        # WebEngine (Chromium) plays H.264 and HEVC reliably with --disable-gpu.
+        if _WEBENGINE:
             self._init_webengine_player(filepath)
+        elif _MULTIMEDIA:
+            self._init_mediaplayer(filepath)
         else:
             log.error("No player backend available")
             self._stack.setCurrentIndex(2)
