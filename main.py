@@ -54,10 +54,10 @@ def main() -> None:
     try:
         from PyQt6.QtWebEngineCore import QWebEngineProfile
         profile = QWebEngineProfile.defaultProfile()
-        # Mobile Chrome UA → TikTok renders its vertical mobile layout (fits 360 px)
+        # Desktop Chrome UA — mobile UA triggers TikTok's "Open in App" redirect
         profile.setHttpUserAgent(
-            "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         )
         # Persist cookies so TikTok session survives between rounds
         profile.setPersistentStoragePath(str(DATA_DIR / "webengine"))

@@ -1,9 +1,9 @@
 """Video card shown during a game round — embeds TikTok player in-app."""
 from __future__ import annotations
 import re
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QSizePolicy
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel, QSizePolicy
 from PyQt6.QtCore import Qt, QUrl
-from PyQt6.QtGui import QFont, QColor, QPainter, QLinearGradient
+from PyQt6.QtGui import QFont, QColor, QPainter, QLinearGradient, QDesktopServices
 from models.game import GameVideo
 
 try:
@@ -75,7 +75,9 @@ class VideoCard(QWidget):
             self._web.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             self._web.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             try:
-                from PyQt6.QtWebEngineCore import QWebEngineSettings, QWebEnginePage
+                from PyQt6.QtWebEngineCore import (
+                    QWebEngineSettings, QWebEnginePage, QWebEngineScript
+                )
                 self._web.settings().setAttribute(
                     QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False
                 )
@@ -85,23 +87,59 @@ class VideoCard(QWidget):
                         url, feat, QWebEnginePage.PermissionPolicy.PermissionGrantedByUser
                     )
                 )
+                # Bypass TikTok's webdriver/bot detection so the player renders
+                bypass = QWebEngineScript()
+                bypass.setName("tiktok_bypass")
+                bypass.setSourceCode(
+                    "try{"
+                    "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
+                    "Object.defineProperty(window,'chrome',{"
+                    "  get:()=>({runtime:{},app:{},csi:function(){},loadTimes:function(){}}),"
+                    "  configurable:true});"
+                    # Suppress all uncaught JS errors (TikTok has several on Qt WebEngine)
+                    "window.onerror=function(){return true;};"
+                    "window.addEventListener('unhandledrejection',function(e){e.preventDefault();});"
+                    "}catch(e){}"
+                )
+                bypass.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
+                bypass.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
+                self._web.page().scripts().insert(bypass)
             except Exception:
                 pass
             self._web.loadFinished.connect(lambda _ok: self._web.setFocus())
             self._web.load(QUrl(load_url))
             layout.addWidget(self._web)
+            # Fallback button: opens video in system browser if the embedded player fails
+            if load_url:
+                btn = QPushButton("↗  Ouvrir sur TikTok")
+                btn.setFixedHeight(32)
+                btn.setStyleSheet(
+                    "QPushButton{background:#111;color:#aaa;border:none;"
+                    "font-size:11px;border-top:1px solid #222;}"
+                    "QPushButton:hover{color:#fff;background:#1a1a1a;}"
+                )
+                btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(load_url)))
+                layout.addWidget(btn)
         else:
-            # No WebEngine or no video URL — gradient placeholder
+            # No WebEngine or no video URL — gradient placeholder + open button
             preview = _GradientPreview(self._video, self._color1, self._color2)
             preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             layout.addWidget(preview)
-            if load_url and not _WEBENGINE:
+            if load_url:
+                btn = QPushButton("↗  Ouvrir sur TikTok")
+                btn.setFixedHeight(36)
+                btn.setStyleSheet(
+                    "QPushButton{background:#1a1a1a;color:#ccc;border:none;"
+                    "font-size:12px;border-radius:4px;margin:6px;}"
+                    "QPushButton:hover{color:#fff;background:#222;}"
+                )
+                btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(load_url)))
+                layout.addWidget(btn)
+            elif not _WEBENGINE:
                 lbl = QLabel("Installe PyQt6-WebEngine pour voir la vidéo\npip install PyQt6-WebEngine")
-            else:
-                lbl = QLabel("Pas de vidéo disponible")
-            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl.setStyleSheet("color:#555;font-size:11px;padding:6px;")
-            layout.addWidget(lbl)
+                lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                lbl.setStyleSheet("color:#555;font-size:11px;padding:6px;")
+                layout.addWidget(lbl)
 
 
 class _GradientPreview(QWidget):
