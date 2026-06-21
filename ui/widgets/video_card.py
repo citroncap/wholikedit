@@ -303,35 +303,21 @@ class VideoCard(QWidget):
             self._init_mediaplayer(filepath)
 
     def _init_webengine_player(self, filepath: str) -> None:
-        """Load the local MP4 in a Chromium page — bypasses missing WMF/FFmpeg backend."""
+        """Load the local video directly in Chromium's native player."""
         try:
             from PyQt6.QtWebEngineCore import QWebEngineSettings
-            settings = self._vid_view.settings()
-            settings.setAttribute(
+            self._vid_view.settings().setAttribute(
                 QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False
-            )
-            settings.setAttribute(
-                QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True
             )
         except Exception:
             pass
-        # Write a real HTML file so the page gets a file:// origin instead of
-        # null-origin. Chromium blocks local file:// resource loading from null-origin
-        # pages (created by setHtml), which causes the black screen.
-        video_name = Path(filepath).name
-        html_path = Path(filepath).parent / "player.html"
-        html_path.write_text(
-            "<!DOCTYPE html><html><head>"
-            "<style>*{margin:0;padding:0;box-sizing:border-box}"
-            "html,body{width:100%;height:100%;background:#000;overflow:hidden}"
-            "video{width:100%;height:100%;object-fit:contain}"
-            "</style></head><body>"
-            f"<video src='{video_name}' autoplay loop playsinline></video>"
-            "</body></html>",
-            encoding="utf-8",
+
+        self._vid_view.loadFinished.connect(
+            lambda ok: log.info("WebEngine load finished ok=%s", ok)
         )
-        self._html_file = str(html_path)
-        self._vid_view.load(QUrl.fromLocalFile(self._html_file))
+        url = QUrl.fromLocalFile(filepath)
+        log.info("WebEngine loading: %s", url.toString())
+        self._vid_view.load(url)
 
     def _init_mediaplayer(self, filepath: str) -> None:
         """Fallback: QMediaPlayer (requires WMF or FFmpeg Qt plugin)."""
