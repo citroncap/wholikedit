@@ -20,14 +20,18 @@ try:
     from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
     from PyQt6.QtMultimediaWidgets import QVideoWidget
     _MULTIMEDIA = True
-except ImportError:
+except ImportError as _e:
+    log.warning("PyQt6 multimedia not available: %s", _e)
     _MULTIMEDIA = False
 
 try:
     import yt_dlp  # noqa: F401
     _YTDLP = True
-except ImportError:
+except ImportError as _e:
+    log.warning("yt-dlp not available: %s", _e)
     _YTDLP = False
+
+log.info("VideoCard: yt-dlp=%s  multimedia=%s", _YTDLP, _MULTIMEDIA)
 
 # Cycling gradient pairs (index by hash of video_id)
 _GRADIENTS = [
