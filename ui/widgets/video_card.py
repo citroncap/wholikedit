@@ -17,6 +17,13 @@ from models.game import GameVideo
 log = logging.getLogger(__name__)
 
 try:
+    from PyQt6.QtWebEngineWidgets import QWebEngineView
+    _WEBENGINE = True
+except ImportError as _e:
+    log.warning("PyQt6-WebEngine not available: %s", _e)
+    _WEBENGINE = False
+
+try:
     from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
     from PyQt6.QtMultimediaWidgets import QVideoWidget
     _MULTIMEDIA = True
@@ -30,8 +37,6 @@ try:
 except ImportError as _e:
     log.warning("yt-dlp not available: %s", _e)
     _YTDLP = False
-
-log.info("VideoCard: yt-dlp=%s  multimedia=%s", _YTDLP, _MULTIMEDIA)
 
 # Cycling gradient pairs (index by hash of video_id)
 _GRADIENTS = [
@@ -93,7 +98,7 @@ class VideoCard(QWidget):
         self._stack.addWidget(self._make_fallback_page())   # 2
 
         url = self._video.video_url
-        if url and _YTDLP and _MULTIMEDIA:
+        if url and _YTDLP and (_WEBENGINE or _MULTIMEDIA):
             self._start_download(url)
             self._stack.setCurrentIndex(0)
         else:
@@ -155,61 +160,49 @@ class VideoCard(QWidget):
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
 
-        if _MULTIMEDIA:
+        # Prefer WebEngine (Chromium has a built-in H.264 player that always works).
+        # Fall back to QVideoWidget only when WebEngine isn't installed.
+        self._uses_webengine = _WEBENGINE
+        if _WEBENGINE:
+            self._vid_view = QWebEngineView()
+            self._vid_view.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+            )
+            v.addWidget(self._vid_view, 1)
+        elif _MULTIMEDIA:
             self._vid_view = QVideoWidget()
             self._vid_view.setSizePolicy(
                 QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
             )
             v.addWidget(self._vid_view, 1)
 
-        # Controls bar
+        # Minimal control bar — WebEngine shows its own controls inside the player
         ctrl = QWidget()
         ctrl.setStyleSheet("background:#111;border-top:1px solid #1a1a1a;")
-        ctrl.setFixedHeight(38)
+        ctrl.setFixedHeight(32)
         cl = QHBoxLayout(ctrl)
         cl.setContentsMargins(8, 0, 8, 0)
         cl.setSpacing(6)
-
-        self._play_btn = QPushButton("⏸")
-        self._play_btn.setFixedSize(28, 28)
-        self._play_btn.setStyleSheet(
-            "QPushButton{background:none;border:none;color:#ccc;font-size:16px;}"
-            "QPushButton:hover{color:#fff;}"
-        )
-        self._play_btn.clicked.connect(self._toggle_play)
-        cl.addWidget(self._play_btn)
-
-        self._vol = QSlider(Qt.Orientation.Horizontal)
-        self._vol.setRange(0, 100)
-        self._vol.setValue(80)
-        self._vol.setFixedWidth(64)
-        self._vol.setStyleSheet(
-            "QSlider::groove:horizontal{background:#333;height:3px;border-radius:1px;}"
-            "QSlider::handle:horizontal{background:#fff;width:10px;height:10px;"
-            "margin:-4px 0;border-radius:5px;}"
-        )
-        cl.addWidget(self._vol)
         cl.addStretch()
 
-        # Open local file in default player (fallback if QVideoWidget shows black)
         self._open_file_btn = QPushButton("📂")
-        self._open_file_btn.setFixedSize(28, 28)
-        self._open_file_btn.setToolTip("Ouvrir le fichier vidéo")
+        self._open_file_btn.setFixedSize(24, 24)
+        self._open_file_btn.setToolTip("Ouvrir dans le lecteur système")
         self._open_file_btn.setStyleSheet(
-            "QPushButton{background:none;border:none;color:#444;font-size:13px;}"
+            "QPushButton{background:none;border:none;color:#444;font-size:12px;}"
             "QPushButton:hover{color:#aaa;}"
         )
-        self._open_file_btn.setVisible(False)   # shown only once file is downloaded
+        self._open_file_btn.setVisible(False)
         self._open_file_btn.clicked.connect(self._open_local_file)
         cl.addWidget(self._open_file_btn)
 
         url = self._video.video_url
         if url:
             ob = QPushButton("↗")
-            ob.setFixedSize(28, 28)
+            ob.setFixedSize(24, 24)
             ob.setToolTip("Ouvrir sur TikTok")
             ob.setStyleSheet(
-                "QPushButton{background:none;border:none;color:#444;font-size:13px;}"
+                "QPushButton{background:none;border:none;color:#444;font-size:12px;}"
                 "QPushButton:hover{color:#aaa;}"
             )
             ob.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(url)))
@@ -302,14 +295,40 @@ class VideoCard(QWidget):
     # ── Player ────────────────────────────────────────────────────────────────
 
     def _init_player(self, filepath: str) -> None:
-        if not _MULTIMEDIA:
-            return
-        self._audio = QAudioOutput()
-        self._audio.setVolume(self._vol.value() / 100.0)
-        self._vol.valueChanged.connect(
-            lambda v: self._audio.setVolume(v / 100.0)
-        )
+        log.info("Player loading: %s (webengine=%s)", filepath, self._uses_webengine)
+        if self._uses_webengine:
+            self._init_webengine_player(filepath)
+        elif _MULTIMEDIA:
+            self._init_mediaplayer(filepath)
 
+    def _init_webengine_player(self, filepath: str) -> None:
+        """Load the local MP4 in a Chromium page — bypasses missing WMF/FFmpeg backend."""
+        try:
+            from PyQt6.QtWebEngineCore import QWebEngineSettings
+            self._vid_view.settings().setAttribute(
+                QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False
+            )
+        except Exception:
+            pass
+        # Build a minimal HTML page that autoplays the local video file
+        file_url = QUrl.fromLocalFile(filepath).toString()
+        html = (
+            "<!DOCTYPE html><html><head>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            "<style>"
+            "*{margin:0;padding:0;box-sizing:border-box}"
+            "html,body{width:100%;height:100%;background:#000;overflow:hidden}"
+            "video{width:100%;height:100%;object-fit:contain}"
+            "</style></head><body>"
+            f"<video src='{file_url}' autoplay loop playsinline></video>"
+            "</body></html>"
+        )
+        self._vid_view.setHtml(html, QUrl.fromLocalFile(filepath))
+
+    def _init_mediaplayer(self, filepath: str) -> None:
+        """Fallback: QMediaPlayer (requires WMF or FFmpeg Qt plugin)."""
+        self._audio = QAudioOutput()
+        self._audio.setVolume(0.8)
         self._player = QMediaPlayer()
         self._player.setAudioOutput(self._audio)
         self._player.setVideoOutput(self._vid_view)
@@ -320,7 +339,6 @@ class VideoCard(QWidget):
             lambda s: log.info("Player state → %s", s)
         )
         self._player.mediaStatusChanged.connect(self._on_media_status)
-        log.info("Player loading: %s", filepath)
         self._player.setSource(QUrl.fromLocalFile(filepath))
 
     def _on_media_status(self, status: QMediaPlayer.MediaStatus) -> None:
@@ -332,16 +350,6 @@ class VideoCard(QWidget):
             self._player.setPosition(0)
             self._player.play()
 
-    def _toggle_play(self) -> None:
-        if not self._player:
-            return
-        if self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
-            self._player.pause()
-            self._play_btn.setText("▶")
-        else:
-            self._player.play()
-            self._play_btn.setText("⏸")
-
     # ── Cleanup ───────────────────────────────────────────────────────────────
 
     def cleanup(self) -> None:
@@ -352,6 +360,11 @@ class VideoCard(QWidget):
                 self._dl.progress.disconnect()
                 self._dl.finished.disconnect()
                 self._dl.error.disconnect()
+            except Exception:
+                pass
+        if self._uses_webengine and hasattr(self, "_vid_view"):
+            try:
+                self._vid_view.load(QUrl("about:blank"))
             except Exception:
                 pass
         if self._player:
