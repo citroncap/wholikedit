@@ -4,7 +4,7 @@ import time
 from typing import Optional
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QFrame, QProgressBar, QScrollArea, QSizePolicy,
+    QFrame, QProgressBar, QScrollArea, QSizePolicy, QMessageBox,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont
@@ -24,7 +24,8 @@ class GameScreen(QWidget):
     Client: purely display – all data pushed via signals from MainWindow.
     """
     answer_submitted = pyqtSignal(str, int)   # guessed_player_id, elapsed_ms
-    next_round_host  = pyqtSignal()           # host presses "Next Round"
+    next_round_host  = pyqtSignal()           # host presses "Next Round" (result page)
+    force_end_round  = pyqtSignal()           # host force-skips from round page
     back_to_menu     = pyqtSignal()
 
     def __init__(self, parent=None) -> None:
@@ -34,6 +35,7 @@ class GameScreen(QWidget):
         self._players:  list[Player]      = []
         self._choices:  list[Player]      = []
         self._answered      = False
+        self._votes_complete = False
         self._round_start:  float         = 0.0
         self._timer_total_ms = 15_000
         self._video_widget: Optional[VideoCard] = None
@@ -169,11 +171,10 @@ class GameScreen(QWidget):
 
         right.addStretch()
 
-        self._next_btn = QPushButton("Continue →")
-        self._next_btn.setProperty("primary", True)
-        self._next_btn.setFixedHeight(48)
+        self._next_btn = QPushButton("Passer →")
+        self._next_btn.setFixedHeight(44)
         self._next_btn.setVisible(False)
-        self._next_btn.clicked.connect(self.next_round_host)
+        self._next_btn.clicked.connect(self._on_round_skip_clicked)
         right.addWidget(self._next_btn)
 
         cl.addLayout(right, 1)   # right takes all remaining width
@@ -377,7 +378,10 @@ class GameScreen(QWidget):
             self._choice_btns.append(btn)
             self._vote_container.addWidget(btn)
 
-        self._next_btn.setVisible(False)
+        # Skip button: visible only to host, starts grayed until all vote
+        self._votes_complete = False
+        self._next_btn.setVisible(self._is_host)
+        self._update_skip_btn_style()
 
         # Timer — 0 means no limit
         self._tick_timer.stop()
@@ -395,6 +399,38 @@ class GameScreen(QWidget):
             self._tick_timer.start()
 
         self._show("round")
+
+    def mark_votes_complete(self) -> None:
+        """Called by MainWindow when all eligible players have voted."""
+        self._votes_complete = True
+        self._update_skip_btn_style()
+
+    def _update_skip_btn_style(self) -> None:
+        if self._votes_complete:
+            self._next_btn.setStyleSheet(
+                "QPushButton{background:#FE2C55;color:#fff;border:none;"
+                "border-radius:10px;padding:10px 16px;font-size:14px;font-weight:600;}"
+                "QPushButton:hover{background:#ff4d6d;}"
+            )
+            self._next_btn.setToolTip("")
+        else:
+            self._next_btn.setStyleSheet(
+                "QPushButton{background:#1a1a1a;color:#555;border:2px solid #2a2a2a;"
+                "border-radius:10px;padding:10px 16px;font-size:14px;font-weight:600;}"
+                "QPushButton:hover{background:#222;color:#777;}"
+            )
+            self._next_btn.setToolTip("En attente des votes…")
+
+    def _on_round_skip_clicked(self) -> None:
+        if not self._votes_complete:
+            reply = QMessageBox.question(
+                self, "Passer le round",
+                "Tout le monde n'a pas encore voté.\nPasser quand même ?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        self.force_end_round.emit()
 
     def set_my_video(self) -> None:
         """Current video belongs to this player — remove vote buttons, show message."""

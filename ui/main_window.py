@@ -143,6 +143,7 @@ class MainWindow(QMainWindow):
         # Game
         self._game_screen.answer_submitted.connect(self._on_answer_submitted)
         self._game_screen.next_round_host.connect(self._on_host_next_round)
+        self._game_screen.force_end_round.connect(self._on_force_end_round)
         self._game_screen.back_to_menu.connect(self._on_game_finished)
 
         # TikTok
@@ -513,6 +514,7 @@ class MainWindow(QMainWindow):
                 self._host_ctrl.on_answer_received(player_id, guessed_id, elapsed_ms)
             if not self._round_ended and self._game_svc and self._game_svc.all_answered():
                 log.info("All answered → ending round")
+                self._game_screen.mark_votes_complete()
                 self._host_end_round()
         except Exception:
             log.exception("Error processing remote answer")
@@ -526,6 +528,7 @@ class MainWindow(QMainWindow):
                     self._host_ctrl.on_answer_received(my_id, guessed_id, elapsed_ms)
                 if not self._round_ended and self._game_svc and self._game_svc.all_answered():
                     log.info("All answered → ending round")
+                    self._game_screen.mark_votes_complete()
                     self._host_end_round()
             except Exception:
                 log.exception("Error processing host answer")
@@ -535,6 +538,11 @@ class MainWindow(QMainWindow):
 
     def _on_host_next_round(self) -> None:
         QTimer.singleShot(100, self._host_begin_next_round)
+
+    def _on_force_end_round(self) -> None:
+        """Host manually forces round end from the round-page skip button."""
+        if not self._round_ended:
+            self._host_end_round()
 
     def _host_end_round(self) -> None:
         if not self._host_ctrl or self._round_ended:

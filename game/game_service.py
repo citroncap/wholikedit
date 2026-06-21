@@ -73,30 +73,40 @@ class GameService:
         for vlist in by_player.values():
             random.shuffle(vlist)
 
-        # Adjust total_rounds so each player contributes the same number of videos.
-        # e.g. 2 players × 10 rounds = 5 each; 3 players × 10 rounds → 9 rounds (3 each).
+        # Distribute total_rounds as evenly as possible.
+        # base rounds per player, with `extra` random players getting one more.
+        # e.g. 3 players × 10 rounds → base=3, extra=1 → one player gets 4, two get 3.
         n_players = len(by_player)
-        rounds_per_player = max(1, self._settings.total_rounds // n_players)
-        target = rounds_per_player * n_players
+        base  = self._settings.total_rounds // n_players
+        extra = self._settings.total_rounds % n_players  # players that get base+1
 
-        # Round-robin interleave so every player contributes equally
         player_order = list(by_player.keys())
         random.shuffle(player_order)
+
+        # Assign per-player targets (first `extra` players get one more)
+        targets = {
+            pid: base + (1 if i < extra else 0)
+            for i, pid in enumerate(player_order)
+        }
+        done = {pid: 0 for pid in player_order}
+
+        # Round-robin to interleave videos across players
         result: list[GameVideo] = []
-        while len(result) < target:
+        while True:
             added_any = False
             for pid in player_order:
-                if by_player[pid] and len(result) < target:
+                if done[pid] < targets[pid] and by_player[pid]:
                     result.append(by_player[pid].pop(0))
+                    done[pid] += 1
                     added_any = True
             if not added_any:
                 break
 
-        random.shuffle(result)  # final shuffle hides the interleave pattern
+        random.shuffle(result)
         self._rounds = result
         log.info(
-            "Built %d rounds from %d players (%d total videos) — %d per player",
-            len(self._rounds), n_players, len(self._pool), rounds_per_player,
+            "Built %d rounds from %d players (%d total videos) — base %d/player, +1 for %d player(s)",
+            len(self._rounds), n_players, len(self._pool), base, extra,
         )
         return len(self._rounds)
 
