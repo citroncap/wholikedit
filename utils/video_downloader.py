@@ -13,11 +13,16 @@ try:
 except ImportError:
     _YTDLP = False
 
-# Prefer H.264 (avc1) for maximum WebEngine / QMediaPlayer compatibility.
+# Prefer VP9/VP8 (handled by Chromium's bundled libvpx, no WMF needed).
+# Fall back to H.264 if TikTok doesn't offer WebM streams; the downloader
+# will transcode to VP8/WebM in that case.
 _FORMAT = (
-    "bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]"
+    "bestvideo[vcodec^=vp9][ext=webm]+bestaudio[ext=webm]"
+    "/bestvideo[vcodec^=vp9]+bestaudio"
+    "/bestvideo[vcodec^=vp8]+bestaudio"
+    "/bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]"
     "/bestvideo[vcodec^=avc1]+bestaudio"
-    "/best[vcodec^=avc1][ext=mp4]"
+    "/best[ext=webm]"
     "/best[ext=mp4]"
     "/best"
 )
@@ -140,9 +145,10 @@ class VideoDownloader(QThread):
             result = subprocess.run(
                 [
                     "ffmpeg", "-y", "-i", src,
-                    "-c:v", "libvpx-vp9",
-                    "-deadline", "realtime", "-cpu-used", "8",
-                    "-c:a", "libopus",
+                    "-c:v", "libvpx",          # VP8 — same libvpx, 8× faster than VP9
+                    "-deadline", "realtime", "-cpu-used", "16",
+                    "-b:v", "1500k",
+                    "-c:a", "libvorbis", "-q:a", "5",
                     out,
                 ],
                 capture_output=True,

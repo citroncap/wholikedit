@@ -423,27 +423,26 @@ class VideoCard(QWidget):
         port       = _ensure_video_server(tmp_dir)
         video_name = Path(filepath).name
 
-        # Background starts purple so we can tell if WebEngine renders at all.
-        # Changes to black when video plays, dark-red when video errors.
+        # Cache-bust the video URL with a millisecond timestamp so Chromium
+        # never serves a stale cached file from the previous round.
+        import time as _time
+        ts = int(_time.time() * 1000)
+        video_url = f"{video_name}?t={ts}"
+
         html = (
             "<!DOCTYPE html><html><head>"
             "<style>*{margin:0;padding:0;box-sizing:border-box}"
-            "html,body{width:100%;height:100%;background:#1a0050;overflow:hidden}"
+            "html,body{width:100%;height:100%;background:#000;overflow:hidden}"
             "video{width:100%;height:100%;object-fit:contain}"
             "</style></head><body>"
-            f"<video id='v' src='{video_name}' autoplay loop playsinline controls"
-            " onerror=\"document.body.style.background='#500000'\""
-            " oncanplay=\"document.body.style.background='#000000'\""
-            "></video>"
-            "<script>document.getElementById('v').play().catch(function(e){"
-            "document.body.style.background='#502000';});</script>"
+            f"<video id='v' src='{video_url}' autoplay loop playsinline></video>"
             "</body></html>"
         )
         html_path = tmp_dir / "player.html"
         html_path.write_text(html, encoding="utf-8")
         self._html_file = str(html_path)
 
-        url = QUrl(f"http://127.0.0.1:{port}/player.html")
+        url = QUrl(f"http://127.0.0.1:{port}/player.html?t={ts}")
         log.info("WebEngine loading: %s", url.toString())
         self._vid_view.loadFinished.connect(self._on_webengine_loaded)
         self._vid_view.load(url)
@@ -452,21 +451,15 @@ class VideoCard(QWidget):
         log.info("WebEngine loadFinished ok=%s", ok)
         if not ok or not self._vid_view:
             return
-        js = (
-            "JSON.stringify({"
-            "w:document.body.offsetWidth,h:document.body.offsetHeight,"
-            "ve:!!document.getElementById('v'),"
-            "vr:(document.getElementById('v')||{readyState:-1}).readyState,"
-            "vp:(document.getElementById('v')||{paused:true}).paused,"
-            "vc:((document.getElementById('v')||{}).error||{}).code"
-            "})"
-        )
+        # Explicitly call play() — autoplay can be deferred until the widget
+        # is fully composited, so we trigger it again from the main thread.
         try:
             self._vid_view.page().runJavaScript(
-                js, lambda r: log.info("WebEngine state: %s", r)
+                "var v=document.getElementById('v');"
+                "if(v){v.play().catch(function(){});}"
             )
-        except Exception as exc:
-            log.warning("runJavaScript failed: %s", exc)
+        except Exception:
+            pass
         QTimer.singleShot(1500, self._query_video_state)
 
     def _query_video_state(self) -> None:
