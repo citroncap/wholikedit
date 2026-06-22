@@ -8,11 +8,11 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from network.protocol import (
     MessageReader, encode,
     MSG_JOIN_REQUEST, MSG_VIDEO_SYNC, MSG_PLAYER_READY,
-    MSG_ANSWER, MSG_PING,
+    MSG_ANSWER, MSG_VIDEO_READY, MSG_PING,
     MSG_JOIN_ACCEPT, MSG_JOIN_REJECT, MSG_LOBBY_UPDATE,
     MSG_PLAYER_KICKED, MSG_GAME_START, MSG_ROUND_BEGIN,
     MSG_ROUND_RESULT, MSG_GAME_END, MSG_PONG,
-    MSG_YOUR_ROUND, MSG_IDENTITY_UPDATE,
+    MSG_YOUR_ROUND, MSG_IDENTITY_UPDATE, MSG_PLAY_VIDEO,
 )
 
 log = logging.getLogger(__name__)
@@ -28,6 +28,7 @@ class GameClient(QThread):
     kicked           = pyqtSignal()
     game_started     = pyqtSignal(dict)   # settings dict
     round_begun      = pyqtSignal(dict)   # {round_number, total_rounds, video}
+    play_video       = pyqtSignal()       # host says: start playing now
     your_round       = pyqtSignal()       # it's your video — vote buttons disabled
     round_result     = pyqtSignal(dict)   # full result dict
     game_ended       = pyqtSignal(list)   # [LeaderboardEntry dict]
@@ -75,6 +76,9 @@ class GameClient(QThread):
         self._queue({"type": MSG_ANSWER,
                      "guessed_player_id": guessed_player_id,
                      "elapsed_ms": elapsed_ms})
+
+    def send_video_ready(self) -> None:
+        self._queue({"type": MSG_VIDEO_READY})
 
     def disconnect(self) -> None:
         self._running = False
@@ -152,6 +156,7 @@ class GameClient(QThread):
         elif mtype == MSG_PLAYER_KICKED:self.kicked.emit()
         elif mtype == MSG_GAME_START:   self.game_started.emit(msg.get("settings", {}))
         elif mtype == MSG_ROUND_BEGIN:  self.round_begun.emit(msg)
+        elif mtype == MSG_PLAY_VIDEO:   self.play_video.emit()
         elif mtype == MSG_YOUR_ROUND:   self.your_round.emit()
         elif mtype == MSG_ROUND_RESULT: self.round_result.emit(msg)
         elif mtype == MSG_GAME_END:     self.game_ended.emit(msg.get("leaderboard", []))

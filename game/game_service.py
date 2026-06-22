@@ -196,6 +196,13 @@ class GameService:
         self._scores[player_id] = self._scores.get(player_id, 0) + points
         return answer
 
+    def vote_counts(self) -> tuple[int, int]:
+        """Return (answered, eligible) for the current round."""
+        video    = self.current_video()
+        owner_id = video.owner_player_id if video else ""
+        eligible = sum(1 for p in self._players if p.player_id != owner_id)
+        return len(self._answers), max(1, eligible)
+
     def all_answered(self) -> bool:
         video = self.current_video()
         owner_id = video.owner_player_id if video else ""

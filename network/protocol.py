@@ -11,6 +11,7 @@ MSG_JOIN_REQUEST   = "join_request"    # {player_id, display_name, avatar_color}
 MSG_VIDEO_SYNC     = "video_sync"      # {videos: [{video_id, description, thumbnail_url, author_username, view_count, like_count}]}
 MSG_PLAYER_READY   = "player_ready"    # {ready: bool}
 MSG_ANSWER         = "answer"          # {guessed_player_id: str, elapsed_ms: int}
+MSG_VIDEO_READY    = "video_ready"     # {} — video buffered and ready to play
 MSG_PING           = "ping"            # {}
 
 # ── Host → Client ─────────────────────────────────────────────────────────────
@@ -25,6 +26,7 @@ MSG_GAME_END       = "game_end"        # {leaderboard: [LeaderboardEntry.to_dict
 MSG_PONG           = "pong"            # {}
 MSG_YOUR_ROUND     = "your_round"      # {} — owner of the current video; vote buttons disabled
 MSG_IDENTITY_UPDATE = "identity_update" # {display_name, avatar_color}
+MSG_PLAY_VIDEO     = "play_video"      # {} — all clients ready, start playing now
 
 
 def encode(msg: dict) -> bytes:

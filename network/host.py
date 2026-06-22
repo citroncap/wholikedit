@@ -8,11 +8,11 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from network.protocol import (
     MessageReader, encode,
     MSG_JOIN_REQUEST, MSG_VIDEO_SYNC, MSG_PLAYER_READY,
-    MSG_ANSWER, MSG_PING,
+    MSG_ANSWER, MSG_VIDEO_READY, MSG_PING,
     MSG_JOIN_ACCEPT, MSG_JOIN_REJECT, MSG_LOBBY_UPDATE,
     MSG_PLAYER_KICKED, MSG_GAME_START, MSG_ROUND_BEGIN,
     MSG_ROUND_RESULT, MSG_GAME_END, MSG_PONG,
-    MSG_YOUR_ROUND, MSG_IDENTITY_UPDATE,
+    MSG_YOUR_ROUND, MSG_IDENTITY_UPDATE, MSG_PLAY_VIDEO,
 )
 from utils.config import TCP_PORT_RANGE, MAX_PLAYERS, RELAY_URL
 
@@ -53,6 +53,7 @@ class GameHost(QThread):
     video_sync_received = pyqtSignal(str, list)     # player_id, [video dict]
     ready_changed       = pyqtSignal(str, bool)     # player_id, ready
     answer_received     = pyqtSignal(str, str, int) # player_id, guessed_player_id, elapsed_ms
+    client_video_ready  = pyqtSignal(str)           # player_id
     identity_updated    = pyqtSignal(str, str, str) # player_id, display_name, avatar_color
     error_occurred      = pyqtSignal(str)
     relay_status        = pyqtSignal(bool, str)     # ok, message
@@ -255,6 +256,9 @@ class GameHost(QThread):
             elapsed = int(msg.get("elapsed_ms", 0))
             self.answer_received.emit(player_id, guessed, elapsed)
 
+        elif mtype == MSG_VIDEO_READY:
+            self.client_video_ready.emit(player_id)
+
         elif mtype == MSG_IDENTITY_UPDATE:
             self.identity_updated.emit(
                 player_id,
@@ -345,6 +349,9 @@ class GameHost(QThread):
 
     def send_your_round(self, player_id: str) -> None:
         self._send_to(player_id, {"type": MSG_YOUR_ROUND})
+
+    def broadcast_play_video(self) -> None:
+        self.broadcast({"type": MSG_PLAY_VIDEO})
 
     def broadcast_game_end(self, leaderboard: list[dict]) -> None:
         self.broadcast({"type": MSG_GAME_END, "leaderboard": leaderboard})

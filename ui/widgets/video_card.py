@@ -111,6 +111,8 @@ class VideoCard(QWidget):
       2 – fallback     (gradient card + open-in-browser button)
     """
 
+    video_ready = pyqtSignal()   # video buffered (readyState ≥ 3), safe to play
+
     def __init__(
         self,
         video: GameVideo,
@@ -130,6 +132,7 @@ class VideoCard(QWidget):
         self._uses_webengine = False
         self._vid_view  = None          # created lazily in _init_player
         self._player_area_layout: QVBoxLayout | None = None
+        self._video_ready_emitted = False
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._build()
 
@@ -429,13 +432,14 @@ class VideoCard(QWidget):
         ts = int(_time.time() * 1000)
         video_url = f"{video_name}?t={ts}"
 
+        # No autoplay — host waits for all players to buffer before starting.
         html = (
             "<!DOCTYPE html><html><head>"
             "<style>*{margin:0;padding:0;box-sizing:border-box}"
             "html,body{width:100%;height:100%;background:#000;overflow:hidden}"
             "video{width:100%;height:100%;object-fit:contain}"
             "</style></head><body>"
-            f"<video id='v' src='{video_url}' autoplay loop playsinline></video>"
+            f"<video id='v' src='{video_url}' loop playsinline preload='auto'></video>"
             "</body></html>"
         )
         html_path = tmp_dir / "player.html"
@@ -451,16 +455,39 @@ class VideoCard(QWidget):
         log.info("WebEngine loadFinished ok=%s", ok)
         if not ok or not self._vid_view:
             return
-        # Explicitly call play() — autoplay can be deferred until the widget
-        # is fully composited, so we trigger it again from the main thread.
+        # Start polling for buffered state — play() is triggered by main_window
+        # once ALL players have signalled video_ready.
+        QTimer.singleShot(500, self._poll_video_ready)
+
+    def _poll_video_ready(self) -> None:
+        """Poll readyState until ≥ 3, then emit video_ready. Retries every 500 ms."""
+        if not self._vid_view or self._video_ready_emitted:
+            return
+        js = (
+            "JSON.stringify({"
+            "vr:(document.getElementById('v')||{readyState:-1}).readyState,"
+            "vc:((document.getElementById('v')||{}).error||{}).code"
+            "})"
+        )
+        def _on_state(r: str) -> None:
+            if self._video_ready_emitted:
+                return
+            try:
+                import json as _json
+                s = _json.loads(r or "{}")
+                vr = s.get("vr", 0)
+                log.info("WebEngine readyState=%s error=%s", vr, s.get("vc"))
+                if vr >= 3:
+                    self._video_ready_emitted = True
+                    self.video_ready.emit()
+                else:
+                    QTimer.singleShot(500, self._poll_video_ready)
+            except Exception:
+                QTimer.singleShot(500, self._poll_video_ready)
         try:
-            self._vid_view.page().runJavaScript(
-                "var v=document.getElementById('v');"
-                "if(v){v.play().catch(function(){});}"
-            )
+            self._vid_view.page().runJavaScript(js, _on_state)
         except Exception:
             pass
-        QTimer.singleShot(1500, self._query_video_state)
 
     def _query_video_state(self) -> None:
         if not self._vid_view:
@@ -469,14 +496,26 @@ class VideoCard(QWidget):
             "JSON.stringify({"
             "vr:(document.getElementById('v')||{readyState:-1}).readyState,"
             "vp:(document.getElementById('v')||{paused:true}).paused,"
-            "ct:(document.getElementById('v')||{currentTime:0}).currentTime,"
-            "vc:((document.getElementById('v')||{}).error||{}).code"
+            "ct:(document.getElementById('v')||{currentTime:0}).currentTime"
             "})"
         )
         try:
             self._vid_view.page().runJavaScript(
-                js, lambda r: log.info("WebEngine state @1.5s: %s", r)
+                js, lambda r: log.info("WebEngine state: %s", r)
             )
+        except Exception:
+            pass
+
+    def start_playing(self) -> None:
+        """Called by MainWindow when the host sends the play_video signal."""
+        if not self._vid_view:
+            return
+        try:
+            self._vid_view.page().runJavaScript(
+                "var v=document.getElementById('v');"
+                "if(v){v.currentTime=0;v.play().catch(function(){});}"
+            )
+            QTimer.singleShot(1500, self._query_video_state)
         except Exception:
             pass
 
