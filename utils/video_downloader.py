@@ -1,6 +1,7 @@
 """Background thread that downloads a TikTok video with yt-dlp."""
 from __future__ import annotations
 import logging
+import subprocess
 from pathlib import Path
 from PyQt6.QtCore import QThread, pyqtSignal
 
@@ -39,11 +40,12 @@ class VideoDownloader(QThread):
     finished = pyqtSignal(str)   # absolute path of downloaded file
     error    = pyqtSignal(str)   # human-readable error message
 
-    def __init__(self, url: str, tmp_dir: Path, parent=None) -> None:
+    def __init__(self, url: str, tmp_dir: Path, transcode_webm: bool = False, parent=None) -> None:
         super().__init__(parent)
-        self._url     = url
-        self._tmp_dir = tmp_dir
-        self._stop    = False
+        self._url            = url
+        self._tmp_dir        = tmp_dir
+        self._transcode_webm = transcode_webm
+        self._stop           = False
 
     def cancel(self) -> None:
         self._stop = True
@@ -120,9 +122,47 @@ class VideoDownloader(QThread):
 
         if actual_path and Path(actual_path).exists():
             if last_error:
-                # yt-dlp rename error when ffmpeg merged directly to final filename
                 log.info("File found despite earlier error — treating as success")
+            if self._transcode_webm and not actual_path.endswith(".webm"):
+                actual_path = self._transcode(actual_path)
+                if not actual_path:
+                    return
             self.progress.emit(100)
             self.finished.emit(actual_path)
         else:
             self.error.emit(last_error or "Fichier téléchargé introuvable")
+
+    def _transcode(self, src: str) -> str:
+        """Re-encode src to VP9+Opus WebM; returns output path or '' on failure."""
+        out = str(self._tmp_dir / "round.webm")
+        log.info("Transcoding to VP9/WebM: %s → %s", src, out)
+        try:
+            result = subprocess.run(
+                [
+                    "ffmpeg", "-y", "-i", src,
+                    "-c:v", "libvpx-vp9",
+                    "-deadline", "realtime", "-cpu-used", "8",
+                    "-c:a", "libopus",
+                    out,
+                ],
+                capture_output=True,
+                timeout=120,
+            )
+            if result.returncode == 0 and Path(out).exists():
+                log.info("Transcode done: %s", out)
+                return out
+            log.warning(
+                "ffmpeg transcode failed (rc=%d): %s",
+                result.returncode,
+                result.stderr.decode(errors="replace")[-400:],
+            )
+            self.error.emit("Transcoding vidéo échoué")
+            return ""
+        except FileNotFoundError:
+            log.warning("ffmpeg introuvable — lecture H.264 requise")
+            # Fall back: return original file; WebEngine may not play it but won't crash
+            return src
+        except subprocess.TimeoutExpired:
+            log.warning("ffmpeg transcode timeout")
+            self.error.emit("Transcoding vidéo trop long")
+            return ""

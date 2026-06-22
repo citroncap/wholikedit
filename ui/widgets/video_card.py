@@ -295,7 +295,8 @@ class VideoCard(QWidget):
         tmp = DATA_DIR / "video_tmp"
         tmp.mkdir(exist_ok=True)
 
-        self._dl = VideoDownloader(url, tmp, parent=self)
+        transcode = not _check_multimedia_backend()
+        self._dl = VideoDownloader(url, tmp, transcode_webm=transcode, parent=self)
         self._dl.progress.connect(self._on_progress)
         self._dl.finished.connect(self._on_finished)
         self._dl.error.connect(self._on_error)
