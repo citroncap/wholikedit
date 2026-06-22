@@ -119,6 +119,9 @@ class VideoDownloader(QThread):
             actual_path = str(files[0]) if files else ""
 
         if actual_path and Path(actual_path).exists():
+            if last_error:
+                # yt-dlp rename error when ffmpeg merged directly to final filename
+                log.info("File found despite earlier error — treating as success")
             self.progress.emit(100)
             self.finished.emit(actual_path)
         else:

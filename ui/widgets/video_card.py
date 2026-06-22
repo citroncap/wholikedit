@@ -53,19 +53,32 @@ def _ensure_video_server(directory: Path) -> int:
 try:
     from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput, QMediaFormat
     from PyQt6.QtMultimediaWidgets import QVideoWidget
-    # Only enable multimedia if the backend actually supports video decoding.
-    # On machines without WMF (Windows N/KN), this returns an empty list.
-    _fmt = QMediaFormat()
-    _MULTIMEDIA = len(_fmt.supportedFileFormats(QMediaFormat.ConversionMode.Decode)) > 0
-    del _fmt
-    if not _MULTIMEDIA:
-        log.warning("No multimedia video formats found — QMediaPlayer disabled, using WebEngine")
+    _MULTIMEDIA = True
 except ImportError as _e:
     log.warning("PyQt6 multimedia not available: %s", _e)
     _MULTIMEDIA = False
-except Exception as _e:
-    log.warning("QMediaFormat backend check failed (%s) — QMediaPlayer disabled", _e)
-    _MULTIMEDIA = False
+
+# Lazy backend check — QMediaFormat() requires QCoreApplication, so we can't
+# call it at import time. Check once at first player init (after QApplication).
+_multimedia_checked = False
+_multimedia_works   = False
+
+
+def _check_multimedia_backend() -> bool:
+    global _multimedia_checked, _multimedia_works
+    if _multimedia_checked:
+        return _multimedia_works
+    _multimedia_checked = True
+    if not _MULTIMEDIA:
+        return False
+    try:
+        fmt = QMediaFormat()
+        _multimedia_works = len(fmt.supportedFileFormats(QMediaFormat.ConversionMode.Decode)) > 0
+        if not _multimedia_works:
+            log.warning("No multimedia video formats found — QMediaPlayer disabled, using WebEngine")
+    except Exception as exc:
+        log.warning("QMediaFormat backend check failed (%s) — QMediaPlayer disabled", exc)
+    return _multimedia_works
 
 try:
     from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -311,9 +324,10 @@ class VideoCard(QWidget):
     # ── Player ────────────────────────────────────────────────────────────────
 
     def _init_player(self, filepath: str) -> None:
+        multimedia_ok = _check_multimedia_backend()
         log.info("Player loading: %s  (multimedia=%s webengine=%s)",
-                 filepath, _MULTIMEDIA, _WEBENGINE)
-        if _MULTIMEDIA:
+                 filepath, multimedia_ok, _WEBENGINE)
+        if multimedia_ok:
             self._init_mediaplayer(filepath)
         elif _WEBENGINE:
             self._init_webengine_player(filepath)
