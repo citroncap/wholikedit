@@ -140,15 +140,16 @@ class VideoDownloader(QThread):
     def _transcode(self, src: str) -> str:
         """Re-encode src to VP9+Opus WebM; returns output path or '' on failure."""
         out = str(self._tmp_dir / "round.webm")
-        log.info("Transcoding to VP9/WebM: %s → %s", src, out)
+        log.info("Transcoding to VP8/WebM: %s → %s", src, out)
         try:
             result = subprocess.run(
                 [
                     "ffmpeg", "-y", "-i", src,
-                    "-c:v", "libvpx",          # VP8 — same libvpx, 8× faster than VP9
+                    "-c:v", "libvpx",
                     "-deadline", "realtime", "-cpu-used", "16",
-                    "-b:v", "1500k",
-                    "-c:a", "libvorbis", "-q:a", "5",
+                    "-b:v", "600k",            # keep file small for fast encode+write
+                    "-vf", "scale=-2:720",     # cap height (TikTok can be 1080p)
+                    "-c:a", "libvorbis", "-q:a", "4",
                     out,
                 ],
                 capture_output=True,
