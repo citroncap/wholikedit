@@ -422,14 +422,20 @@ class VideoCard(QWidget):
         port       = _ensure_video_server(tmp_dir)
         video_name = Path(filepath).name
 
+        # Background starts purple so we can tell if WebEngine renders at all.
+        # Changes to black when video plays, dark-red when video errors.
         html = (
             "<!DOCTYPE html><html><head>"
             "<style>*{margin:0;padding:0;box-sizing:border-box}"
-            "html,body{width:100%;height:100%;background:#000;overflow:hidden}"
+            "html,body{width:100%;height:100%;background:#1a0050;overflow:hidden}"
             "video{width:100%;height:100%;object-fit:contain}"
             "</style></head><body>"
-            f"<video id='v' src='{video_name}' autoplay loop playsinline controls></video>"
-            "<script>document.getElementById('v').play().catch(()=>{})</script>"
+            f"<video id='v' src='{video_name}' autoplay loop playsinline controls"
+            " onerror=\"document.body.style.background='#500000'\""
+            " oncanplay=\"document.body.style.background='#000000'\""
+            "></video>"
+            "<script>document.getElementById('v').play().catch(function(e){"
+            "document.body.style.background='#502000';});</script>"
             "</body></html>"
         )
         html_path = tmp_dir / "player.html"
@@ -438,10 +444,47 @@ class VideoCard(QWidget):
 
         url = QUrl(f"http://127.0.0.1:{port}/player.html")
         log.info("WebEngine loading: %s", url.toString())
-        self._vid_view.loadFinished.connect(
-            lambda ok: log.info("WebEngine loadFinished ok=%s", ok)
-        )
+        self._vid_view.loadFinished.connect(self._on_webengine_loaded)
         self._vid_view.load(url)
+
+    def _on_webengine_loaded(self, ok: bool) -> None:
+        log.info("WebEngine loadFinished ok=%s", ok)
+        if not ok or not self._vid_view:
+            return
+        js = (
+            "JSON.stringify({"
+            "w:document.body.offsetWidth,h:document.body.offsetHeight,"
+            "ve:!!document.getElementById('v'),"
+            "vr:(document.getElementById('v')||{readyState:-1}).readyState,"
+            "vp:(document.getElementById('v')||{paused:true}).paused,"
+            "vc:((document.getElementById('v')||{}).error||{}).code"
+            "})"
+        )
+        try:
+            self._vid_view.page().runJavaScript(
+                js, lambda r: log.info("WebEngine state: %s", r)
+            )
+        except Exception as exc:
+            log.warning("runJavaScript failed: %s", exc)
+        QTimer.singleShot(1500, self._query_video_state)
+
+    def _query_video_state(self) -> None:
+        if not self._vid_view:
+            return
+        js = (
+            "JSON.stringify({"
+            "vr:(document.getElementById('v')||{readyState:-1}).readyState,"
+            "vp:(document.getElementById('v')||{paused:true}).paused,"
+            "ct:(document.getElementById('v')||{currentTime:0}).currentTime,"
+            "vc:((document.getElementById('v')||{}).error||{}).code"
+            "})"
+        )
+        try:
+            self._vid_view.page().runJavaScript(
+                js, lambda r: log.info("WebEngine state @1.5s: %s", r)
+            )
+        except Exception:
+            pass
 
     def _on_media_status(self, status: QMediaPlayer.MediaStatus) -> None:
         if not self._player:
