@@ -466,8 +466,6 @@ class MainWindow(QMainWindow):
         self._players_video_ready = set()
         self._host_video_ready    = False
         self._video_started       = False
-        rn = self._current_round_number
-        QTimer.singleShot(12_000, lambda: self._video_ready_timeout(rn))
         choices = self._game_svc.get_choices(video)
 
         # Broadcast to clients (video without owner — video_url included for preview)
@@ -565,6 +563,11 @@ class MainWindow(QMainWindow):
     def _on_local_video_ready(self) -> None:
         """Local VideoCard has buffered enough data to play."""
         if self._is_host:
+            if self._video_started:
+                # Timeout fired before this video finished loading — start it now.
+                log.info("Late video_ready after play_video sent — starting locally")
+                self._game_screen.start_playing()
+                return
             self._host_video_ready = True
             self._check_all_video_ready()
         else:
@@ -592,11 +595,6 @@ class MainWindow(QMainWindow):
         self._game_screen.start_playing()
         if self._host:
             self._host.broadcast_play_video()
-
-    def _video_ready_timeout(self, round_number: int) -> None:
-        if round_number == self._current_round_number and not self._video_started:
-            log.warning("Video-ready timeout for round %d — starting anyway", round_number)
-            self._play_video_now()
 
     # ── Round end ─────────────────────────────────────────────────────────────
 

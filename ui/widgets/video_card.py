@@ -295,8 +295,11 @@ class VideoCard(QWidget):
     def _start_download(self, url: str) -> None:
         from utils.video_downloader import VideoDownloader
         from utils.config import DATA_DIR
-        tmp = DATA_DIR / "video_tmp"
-        tmp.mkdir(exist_ok=True)
+        import os as _os
+        # Per-PID subdirectory so two instances on the same machine don't race
+        # to write the same round.mp4 file.
+        tmp = DATA_DIR / "video_tmp" / str(_os.getpid())
+        tmp.mkdir(parents=True, exist_ok=True)
 
         transcode = not _check_multimedia_backend()
         self._dl = VideoDownloader(url, tmp, transcode_webm=transcode, parent=self)
@@ -458,6 +461,9 @@ class VideoCard(QWidget):
         # Start polling for buffered state — play() is triggered by main_window
         # once ALL players have signalled video_ready.
         QTimer.singleShot(500, self._poll_video_ready)
+        # Safety: if readyState never reaches 3 within 15 s, emit anyway so the
+        # sync protocol is not permanently blocked by a stuck video element.
+        QTimer.singleShot(15_000, self._force_video_ready)
 
     def _poll_video_ready(self) -> None:
         """Poll readyState until ≥ 3, then emit video_ready. Retries every 500 ms."""
@@ -505,6 +511,12 @@ class VideoCard(QWidget):
             )
         except Exception:
             pass
+
+    def _force_video_ready(self) -> None:
+        if not self._video_ready_emitted:
+            log.warning("Video readyState poll timed out — forcing video_ready")
+            self._video_ready_emitted = True
+            self.video_ready.emit()
 
     def start_playing(self) -> None:
         """Called by MainWindow when the host sends the play_video signal."""
