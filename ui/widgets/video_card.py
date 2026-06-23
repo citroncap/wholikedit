@@ -245,42 +245,20 @@ class VideoCard(QWidget):
             self._stack.setCurrentIndex(2)
             return
 
-        # Canvas-based player: hidden <video> decoded by Chromium,
-        # drawn frame-by-frame to <canvas> via requestAnimationFrame.
-        # This bypasses the GPU compositor path that causes black video on Windows.
         ts = int(time.time() * 1000)
         video_name = Path(filepath).name
-        html = f"""<!DOCTYPE html>
-<html><head><style>
-*{{margin:0;padding:0}}
-html,body{{width:100%;height:100%;background:#000;overflow:hidden}}
-canvas{{display:block;width:100%;height:100%}}
-</style></head><body>
-<canvas id="c"></canvas>
-<video id="v" src="{video_name}?t={ts}" autoplay loop playsinline style="display:none"></video>
-<script>
-(function(){{
-    var v=document.getElementById('v');
-    var c=document.getElementById('c');
-    var ctx=c.getContext('2d');
-    function frame(){{
-        if(v.videoWidth>0){{
-            var vw=v.videoWidth,vh=v.videoHeight;
-            var cw=c.offsetWidth,ch=c.offsetHeight;
-            if(c.width!==cw)c.width=cw;
-            if(c.height!==ch)c.height=ch;
-            var s=Math.min(cw/vw,ch/vh);
-            var x=(cw-vw*s)/2,y=(ch-vh*s)/2;
-            ctx.fillStyle='#000';ctx.fillRect(0,0,cw,ch);
-            ctx.drawImage(v,x,y,vw*s,vh*s);
-        }}
-        requestAnimationFrame(frame);
-    }}
-    v.play().catch(function(){{}});
-    frame();
-}})();
-</script>
-</body></html>"""
+        # Simple direct <video> with controls — user can click play if autoplay
+        # is blocked, and controls use the browser's native compositor layer
+        # which is more robust than canvas drawImage on Windows.
+        html = (
+            "<!DOCTYPE html><html><head><style>"
+            "*{margin:0;padding:0}"
+            "html,body{width:100%;height:100%;background:#000;overflow:hidden}"
+            "video{width:100%;height:100%;object-fit:contain}"
+            f"</style></head><body>"
+            f"<video src='{video_name}?t={ts}' autoplay loop playsinline controls></video>"
+            "</body></html>"
+        )
         html_path = tmp_dir / f"player_{ts}.html"
         html_path.write_text(html, encoding="utf-8")
         self._html_file = str(html_path)

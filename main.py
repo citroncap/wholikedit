@@ -7,10 +7,12 @@ import logging
 # Ensure the project root is in sys.path when run as a script or EXE
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Force WebEngine to use SwiftShader (software GPU) instead of the real GPU.
-# Prevents the "audio plays but black video" bug caused by GPU compositor
-# failures on Windows. Must be set before QApplication is created.
-os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu")
+# Disable hardware-accelerated video decode so Chromium decodes VP8/WebM on
+# the CPU and exposes frames to the compositor correctly on Windows N/KN.
+os.environ.setdefault(
+    "QTWEBENGINE_CHROMIUM_FLAGS",
+    "--disable-accelerated-video-decode",
+)
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt, QT_VERSION_STR, PYQT_VERSION_STR
