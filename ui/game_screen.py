@@ -27,7 +27,6 @@ class GameScreen(QWidget):
     next_round_host  = pyqtSignal()           # host presses "Next Round" (result page)
     force_end_round  = pyqtSignal()           # host force-skips from round page
     back_to_menu     = pyqtSignal()
-    video_ready      = pyqtSignal()           # local video buffered, forwarded from VideoCard
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -336,7 +335,6 @@ class GameScreen(QWidget):
         self._video_widget.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
-        self._video_widget.video_ready.connect(self.video_ready)
         self._video_area.addWidget(self._video_widget, stretch=1)
 
         # Rebuild vote buttons dynamically — one per player choice
@@ -401,11 +399,6 @@ class GameScreen(QWidget):
             self._tick_timer.start()
 
         self._show("round")
-
-    def start_playing(self) -> None:
-        """Called by MainWindow when the host broadcasts play_video."""
-        if self._video_widget:
-            self._video_widget.start_playing()
 
     def update_vote_count(self, answered: int, eligible: int) -> None:
         """Show live vote progress on the skip button (host only)."""

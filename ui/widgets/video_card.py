@@ -1,84 +1,20 @@
 """Video card shown during a game round.
 
-Player priority:
-  1. QMediaPlayer + QVideoWidget  (requires WMF on Windows — install Media Feature Pack)
-  2. QWebEngineView via localhost HTTP  (fallback if QMediaPlayer errors)
-  3. Gradient card + open-in-browser link  (last resort)
+Loads the TikTok embed URL directly in QtWebEngine (no download, no transcoding).
+Falls back to a gradient preview card if WebEngine is unavailable or the embed fails.
 """
 from __future__ import annotations
-import functools
-import http.server
 import logging
-import socketserver
-import threading
-from pathlib import Path
+import re
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QProgressBar, QSizePolicy, QStackedWidget,
+    QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
+    QSizePolicy, QStackedWidget, QLabel,
 )
-from PyQt6.QtCore import Qt, QUrl, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QFont, QColor, QPainter, QLinearGradient, QDesktopServices
 from models.game import GameVideo
 
 log = logging.getLogger(__name__)
-
-# ── Local HTTP server (fallback for WebEngine) ────────────────────────────────
-_HTTP_PORT: int = 0
-_http_server: socketserver.TCPServer | None = None
-_http_lock = threading.Lock()
-
-
-def _ensure_video_server(directory: Path) -> int:
-    global _http_server, _HTTP_PORT
-    with _http_lock:
-        if _http_server is not None:
-            return _HTTP_PORT
-        try:
-            handler = functools.partial(
-                http.server.SimpleHTTPRequestHandler,
-                directory=str(directory),
-            )
-            server = socketserver.TCPServer(("127.0.0.1", 0), handler)
-            _HTTP_PORT = server.server_address[1]
-            t = threading.Thread(target=server.serve_forever, daemon=True)
-            t.start()
-            _http_server = server
-            log.info("Video HTTP server started on 127.0.0.1:%d", _HTTP_PORT)
-        except Exception as exc:
-            log.warning("Could not start video HTTP server: %s", exc)
-    return _HTTP_PORT
-
-
-# ── Optional dependencies ─────────────────────────────────────────────────────
-try:
-    from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput, QMediaFormat
-    from PyQt6.QtMultimediaWidgets import QVideoWidget
-    _MULTIMEDIA = True
-except ImportError as _e:
-    log.warning("PyQt6 multimedia not available: %s", _e)
-    _MULTIMEDIA = False
-
-# Lazy backend check — QMediaFormat() requires QCoreApplication, so we can't
-# call it at import time. Check once at first player init (after QApplication).
-_multimedia_checked = False
-_multimedia_works   = False
-
-
-def _check_multimedia_backend() -> bool:
-    global _multimedia_checked, _multimedia_works
-    if _multimedia_checked:
-        return _multimedia_works
-    _multimedia_checked = True
-    if not _MULTIMEDIA:
-        return False
-    try:
-        fmt = QMediaFormat()
-        _multimedia_works = len(fmt.supportedFileFormats(QMediaFormat.ConversionMode.Decode)) > 0
-        if not _multimedia_works:
-            log.warning("No multimedia video formats found — QMediaPlayer disabled, using WebEngine")
-    except Exception as exc:
-        log.warning("QMediaFormat backend check failed (%s) — QMediaPlayer disabled", exc)
-    return _multimedia_works
 
 try:
     from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -87,13 +23,6 @@ except ImportError as _e:
     log.warning("PyQt6-WebEngine not available: %s", _e)
     _WEBENGINE = False
 
-try:
-    import yt_dlp  # noqa: F401
-    _YTDLP = True
-except ImportError as _e:
-    log.warning("yt-dlp not available: %s", _e)
-    _YTDLP = False
-
 _GRADIENTS = [
     ("#FE2C55", "#FF6B35"), ("#25F4EE", "#0090FF"), ("#9B59B6", "#FE2C55"),
     ("#2ECC71", "#25F4EE"), ("#F39C12", "#FE2C55"), ("#3498DB", "#9B59B6"),
@@ -101,17 +30,36 @@ _GRADIENTS = [
 ]
 _AlignC = Qt.AlignmentFlag.AlignCenter
 
+# Pretend to be Chrome so TikTok doesn't serve a "watch in app" page
+_CHROME_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/125.0.0.0 Safari/537.36"
+)
+_TIKTOK_ID_RE = re.compile(r"^\d{8,}$")
+_ua_applied = False
+
+
+def _apply_chrome_ua() -> None:
+    """Set Chrome user agent on the default WebEngine profile (once)."""
+    global _ua_applied
+    if _ua_applied or not _WEBENGINE:
+        return
+    try:
+        from PyQt6.QtWebEngineCore import QWebEngineProfile
+        QWebEngineProfile.defaultProfile().setHttpUserAgent(_CHROME_UA)
+        _ua_applied = True
+    except Exception as exc:
+        log.warning("Could not set WebEngine user agent: %s", exc)
+
 
 class VideoCard(QWidget):
-    """Downloads and plays a TikTok video locally.
+    """Displays a TikTok video via the official embed URL.
 
-    Pages (QStackedWidget):
-      0 – downloading  (progress bar)
-      1 – playing      (player widget created at runtime)
-      2 – fallback     (gradient card + open-in-browser button)
+    Stack:
+      0 – TikTok embed  (QWebEngineView loading tiktok.com/embed/v2/{id})
+      1 – Gradient fallback (WebEngine unavailable or load error)
     """
-
-    video_ready = pyqtSignal()   # video buffered (readyState ≥ 3), safe to play
 
     def __init__(
         self,
@@ -121,27 +69,16 @@ class VideoCard(QWidget):
         parent=None,
     ) -> None:
         super().__init__(parent)
-        self._video     = video
-        self._color1    = color1
-        self._color2    = color2
-        self._player:   QMediaPlayer | None = None
-        self._audio:    QAudioOutput | None = None
-        self._dl        = None
-        self._tmp_file: str = ""
-        self._html_file: str = ""
-        self._uses_webengine = False
-        self._vid_view  = None          # created lazily in _init_player
-        self._player_area_layout: QVBoxLayout | None = None
-        self._video_ready_emitted = False
+        self._video  = video
+        self._color1 = color1
+        self._color2 = color2
+        self._view: "QWebEngineView | None" = None
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._build()
 
     # ── Build ─────────────────────────────────────────────────────────────────
 
     def _build(self) -> None:
-        log.info("VideoCard init: yt-dlp=%s  multimedia=%s  webengine=%s  url=%s",
-                 _YTDLP, _MULTIMEDIA, _WEBENGINE, bool(self._video.video_url))
-
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -149,64 +86,20 @@ class VideoCard(QWidget):
         self._stack = QStackedWidget()
         root.addWidget(self._stack)
 
-        self._stack.addWidget(self._make_download_page())   # 0
-        self._stack.addWidget(self._make_player_page())     # 1
-        self._stack.addWidget(self._make_fallback_page())   # 2
+        self._stack.addWidget(self._make_player_page())   # 0
+        self._stack.addWidget(self._make_fallback_page()) # 1
 
-        url = self._video.video_url
-        if url and _YTDLP and (_MULTIMEDIA or _WEBENGINE):
-            self._start_download(url)
+        video_id = self._video.video_id
+        if _WEBENGINE and video_id and _TIKTOK_ID_RE.match(video_id):
+            _apply_chrome_ua()
+            self._load_embed(video_id)
             self._stack.setCurrentIndex(0)
         else:
-            self._stack.setCurrentIndex(2)
-
-    def _make_download_page(self) -> QWidget:
-        page = QWidget()
-        page.setStyleSheet("background:#0a0a0a;")
-        v = QVBoxLayout(page)
-        v.setAlignment(_AlignC)
-        v.setContentsMargins(24, 24, 24, 24)
-        v.setSpacing(10)
-        v.addStretch()
-
-        lbl = QLabel("Téléchargement de la vidéo…")
-        lbl.setFont(QFont("Segoe UI", 13))
-        lbl.setStyleSheet("color:#888;")
-        lbl.setAlignment(_AlignC)
-        v.addWidget(lbl)
-
-        self._dl_bar = QProgressBar()
-        self._dl_bar.setRange(0, 100)
-        self._dl_bar.setValue(0)
-        self._dl_bar.setTextVisible(False)
-        self._dl_bar.setFixedHeight(6)
-        self._dl_bar.setStyleSheet(
-            "QProgressBar{background:#1a1a1a;border-radius:3px;border:none;}"
-            "QProgressBar::chunk{background:#FE2C55;border-radius:3px;}"
-        )
-        v.addWidget(self._dl_bar)
-
-        self._dl_pct = QLabel("0 %")
-        self._dl_pct.setStyleSheet("color:#555;font-size:11px;")
-        self._dl_pct.setAlignment(_AlignC)
-        v.addWidget(self._dl_pct)
-
-        if self._video.author_username:
-            auth = QLabel(f"@{self._video.author_username}")
-            auth.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
-            auth.setStyleSheet("color:#444;margin-top:20px;")
-            auth.setAlignment(_AlignC)
-            v.addWidget(auth)
-
-        if self._video.short_description:
-            desc = QLabel(self._video.short_description)
-            desc.setWordWrap(True)
-            desc.setStyleSheet("color:#333;font-size:11px;")
-            desc.setAlignment(_AlignC)
-            v.addWidget(desc)
-
-        v.addStretch()
-        return page
+            log.info(
+                "VideoCard fallback: webengine=%s video_id=%r",
+                _WEBENGINE, video_id,
+            )
+            self._stack.setCurrentIndex(1)
 
     def _make_player_page(self) -> QWidget:
         page = QWidget()
@@ -215,44 +108,14 @@ class VideoCard(QWidget):
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
 
-        # The actual player widget is added here at play time (_init_player)
-        area = QWidget()
-        area.setStyleSheet("background:#000;")
-        self._player_area_layout = QVBoxLayout(area)
-        self._player_area_layout.setContentsMargins(0, 0, 0, 0)
-        v.addWidget(area, 1)
-
-        ctrl = QWidget()
-        ctrl.setStyleSheet("background:#111;border-top:1px solid #1a1a1a;")
-        ctrl.setFixedHeight(32)
-        cl = QHBoxLayout(ctrl)
-        cl.setContentsMargins(8, 0, 8, 0)
-        cl.setSpacing(6)
-        cl.addStretch()
-
-        self._open_file_btn = QPushButton("📂")
-        self._open_file_btn.setFixedSize(24, 24)
-        self._open_file_btn.setToolTip("Ouvrir dans le lecteur système")
-        self._open_file_btn.setStyleSheet(
-            "QPushButton{background:none;border:none;color:#444;font-size:12px;}"
-            "QPushButton:hover{color:#aaa;}"
-        )
-        self._open_file_btn.setVisible(False)
-        self._open_file_btn.clicked.connect(self._open_local_file)
-        cl.addWidget(self._open_file_btn)
-
-        url = self._video.video_url
-        if url:
-            ob = QPushButton("↗")
-            ob.setFixedSize(24, 24)
-            ob.setToolTip("Ouvrir sur TikTok")
-            ob.setStyleSheet(
-                "QPushButton{background:none;border:none;color:#444;font-size:12px;}"
-                "QPushButton:hover{color:#aaa;}"
+        if _WEBENGINE:
+            self._view = QWebEngineView()
+            self._view.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
             )
-            ob.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(url)))
-            cl.addWidget(ob)
+            v.addWidget(self._view, 1)
 
+        ctrl = self._make_ctrl_bar()
         v.addWidget(ctrl)
         return page
 
@@ -278,301 +141,74 @@ class VideoCard(QWidget):
             btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(url)))
             v.addWidget(btn)
 
-        if not _YTDLP:
-            lbl = QLabel("Installe yt-dlp pour voir les vidéos :\npip install yt-dlp")
-            lbl.setAlignment(_AlignC)
-            lbl.setStyleSheet(
-                "color:#FE2C55;font-size:10px;padding:4px 6px;"
-                "background:#1a0000;border-top:1px solid #330000;"
-            )
-            lbl.setWordWrap(True)
-            v.addWidget(lbl)
-
         return page
 
-    # ── Download ──────────────────────────────────────────────────────────────
+    def _make_ctrl_bar(self) -> QWidget:
+        ctrl = QWidget()
+        ctrl.setStyleSheet("background:#111;border-top:1px solid #1a1a1a;")
+        ctrl.setFixedHeight(32)
+        cl = QHBoxLayout(ctrl)
+        cl.setContentsMargins(8, 0, 8, 0)
+        cl.addStretch()
+        url = self._video.video_url
+        if url:
+            ob = QPushButton("↗")
+            ob.setFixedSize(24, 24)
+            ob.setToolTip("Ouvrir sur TikTok")
+            ob.setStyleSheet(
+                "QPushButton{background:none;border:none;color:#444;font-size:12px;}"
+                "QPushButton:hover{color:#aaa;}"
+            )
+            ob.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(url)))
+            cl.addWidget(ob)
+        return ctrl
 
-    def _start_download(self, url: str) -> None:
-        from utils.video_downloader import VideoDownloader
-        from utils.config import DATA_DIR
-        import os as _os
-        # Per-PID subdirectory so two instances on the same machine don't race
-        # to write the same round.mp4 file.
-        tmp = DATA_DIR / "video_tmp" / str(_os.getpid())
-        tmp.mkdir(parents=True, exist_ok=True)
+    # ── Embed loading ─────────────────────────────────────────────────────────
 
-        transcode = not _check_multimedia_backend()
-        self._dl = VideoDownloader(url, tmp, transcode_webm=transcode, parent=self)
-        self._dl.progress.connect(self._on_progress)
-        self._dl.finished.connect(self._on_finished)
-        self._dl.error.connect(self._on_error)
-        self._dl.start()
-
-    def _on_progress(self, pct: int) -> None:
-        self._dl_bar.setValue(pct)
-        self._dl_pct.setText(f"{pct} %")
-
-    def _open_local_file(self) -> None:
-        if self._tmp_file and Path(self._tmp_file).exists():
-            QDesktopServices.openUrl(QUrl.fromLocalFile(self._tmp_file))
-
-    def _on_finished(self, filepath: str) -> None:
-        self._tmp_file = filepath
-        sz = Path(filepath).stat().st_size if Path(filepath).exists() else 0
-        log.info("Download complete: %s  (%.1f MB)", filepath, sz / 1e6)
-        self._open_file_btn.setVisible(True)
-        self._stack.setCurrentIndex(1)
-        QTimer.singleShot(80, lambda: self._init_player(filepath))
-
-    def _on_error(self, msg: str) -> None:
-        log.warning("Video download error: %s", msg)
-        self._stack.setCurrentIndex(2)
-
-    # ── Player ────────────────────────────────────────────────────────────────
-
-    def _init_player(self, filepath: str) -> None:
-        multimedia_ok = _check_multimedia_backend()
-        log.info("Player loading: %s  (multimedia=%s webengine=%s)",
-                 filepath, multimedia_ok, _WEBENGINE)
-        if multimedia_ok:
-            self._init_mediaplayer(filepath)
-        elif _WEBENGINE:
-            self._init_webengine_player(filepath)
-        else:
-            log.error("No player backend available")
-            self._stack.setCurrentIndex(2)
-
-    def _init_mediaplayer(self, filepath: str) -> None:
-        """Primary player: QMediaPlayer + QVideoWidget."""
-        self._vid_view = QVideoWidget()
-        self._vid_view.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-        )
-        self._player_area_layout.addWidget(self._vid_view)
-
-        self._audio = QAudioOutput()
-        self._audio.setVolume(0.8)
-        self._player = QMediaPlayer()
-        self._player.setAudioOutput(self._audio)
-        self._player.setVideoOutput(self._vid_view)
-        self._player.mediaStatusChanged.connect(self._on_media_status)
-        self._player.errorOccurred.connect(
-            lambda err, msg: self._on_mediaplayer_error(err, msg, filepath)
-        )
-        self._player.setSource(QUrl.fromLocalFile(filepath))
-        log.info("QMediaPlayer source set")
-        # When no multimedia backend is installed, Qt prints "No QtMultimedia backends
-        # found" to stderr but errorOccurred never fires (silent failure).
-        # Detect this by checking if the player is still in NoMedia after 800ms.
-        QTimer.singleShot(800, lambda: self._mediaplayer_timeout_check(filepath))
-
-    def _mediaplayer_timeout_check(self, filepath: str) -> None:
-        """Fallback if QMediaPlayer silently failed (no backend — errorOccurred never fires)."""
-        if not self._player or self._uses_webengine:
+    def _load_embed(self, video_id: str) -> None:
+        if not self._view:
             return
-        try:
-            status = self._player.mediaStatus()
-        except Exception:
-            status = QMediaPlayer.MediaStatus.NoMedia
-        if status in (
-            QMediaPlayer.MediaStatus.NoMedia,
-            QMediaPlayer.MediaStatus.InvalidMedia,
-        ):
-            log.warning("QMediaPlayer stuck at %s after 800ms → WebEngine fallback", status)
-            self._teardown_mediaplayer()
-            if _WEBENGINE:
-                self._init_webengine_player(filepath)
-
-    def _teardown_mediaplayer(self) -> None:
-        """Release QMediaPlayer/QVideoWidget without calling stop() (may crash with no backend)."""
-        try:
-            if self._player:
-                self._player.mediaStatusChanged.disconnect()
-                self._player.errorOccurred.disconnect()
-        except Exception:
-            pass
-        self._player = None
-        self._audio = None
-        if self._vid_view is not None:
-            try:
-                self._player_area_layout.removeWidget(self._vid_view)
-                self._vid_view.deleteLater()
-            except Exception:
-                pass
-            self._vid_view = None
-
-    def _on_mediaplayer_error(self, err, msg: str, filepath: str) -> None:
-        log.error("QMediaPlayer error %s: %s", err, msg)
-        if _WEBENGINE:
-            log.info("Falling back to WebEngine")
-            self._teardown_mediaplayer()
-            self._init_webengine_player(filepath)
-
-    def _init_webengine_player(self, filepath: str) -> None:
-        """Fallback player: QWebEngineView via localhost HTTP."""
-        self._uses_webengine = True
-        self._vid_view = QWebEngineView()
-        self._vid_view.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-        )
-        self._player_area_layout.addWidget(self._vid_view)
-
         try:
             from PyQt6.QtWebEngineCore import QWebEngineSettings
-            self._vid_view.settings().setAttribute(
+            self._view.settings().setAttribute(
                 QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("WebEngine settings: %s", exc)
 
-        tmp_dir    = Path(filepath).parent
-        port       = _ensure_video_server(tmp_dir)
-        video_name = Path(filepath).name
+        embed_url = f"https://www.tiktok.com/embed/v2/{video_id}"
+        log.info("Loading TikTok embed: %s", embed_url)
+        self._view.loadFinished.connect(self._on_load_finished)
+        self._view.load(QUrl(embed_url))
 
-        # Cache-bust the video URL with a millisecond timestamp so Chromium
-        # never serves a stale cached file from the previous round.
-        import time as _time
-        ts = int(_time.time() * 1000)
-        video_url = f"{video_name}?t={ts}"
-
-        # No autoplay — host waits for all players to buffer before starting.
-        html = (
-            "<!DOCTYPE html><html><head>"
-            "<style>*{margin:0;padding:0;box-sizing:border-box}"
-            "html,body{width:100%;height:100%;background:#000;overflow:hidden}"
-            "video{width:100%;height:100%;object-fit:contain}"
-            "</style></head><body>"
-            f"<video id='v' src='{video_url}' loop playsinline preload='auto'></video>"
-            "</body></html>"
-        )
-        html_path = tmp_dir / "player.html"
-        html_path.write_text(html, encoding="utf-8")
-        self._html_file = str(html_path)
-
-        url = QUrl(f"http://127.0.0.1:{port}/player.html?t={ts}")
-        log.info("WebEngine loading: %s", url.toString())
-        self._vid_view.loadFinished.connect(self._on_webengine_loaded)
-        self._vid_view.load(url)
-
-    def _on_webengine_loaded(self, ok: bool) -> None:
-        log.info("WebEngine loadFinished ok=%s", ok)
-        if not ok or not self._vid_view:
+    def _on_load_finished(self, ok: bool) -> None:
+        log.info("TikTok embed loadFinished ok=%s", ok)
+        if not ok:
+            log.warning("Embed failed — showing gradient fallback")
+            self._stack.setCurrentIndex(1)
             return
-        # Start polling for buffered state — play() is triggered by main_window
-        # once ALL players have signalled video_ready.
-        QTimer.singleShot(500, self._poll_video_ready)
-        # Safety: if readyState never reaches 3 within 15 s, emit anyway so the
-        # sync protocol is not permanently blocked by a stuck video element.
-        QTimer.singleShot(15_000, self._force_video_ready)
-
-    def _poll_video_ready(self) -> None:
-        """Poll readyState until ≥ 3, then emit video_ready. Retries every 500 ms."""
-        if not self._vid_view or self._video_ready_emitted:
-            return
-        js = (
-            "JSON.stringify({"
-            "vr:(document.getElementById('v')||{readyState:-1}).readyState,"
-            "vc:((document.getElementById('v')||{}).error||{}).code"
-            "})"
-        )
-        def _on_state(r: str) -> None:
-            if self._video_ready_emitted:
-                return
-            try:
-                import json as _json
-                s = _json.loads(r or "{}")
-                vr = s.get("vr", 0)
-                log.info("WebEngine readyState=%s error=%s", vr, s.get("vc"))
-                if vr >= 3:
-                    self._video_ready_emitted = True
-                    self.video_ready.emit()
-                else:
-                    QTimer.singleShot(500, self._poll_video_ready)
-            except Exception:
-                QTimer.singleShot(500, self._poll_video_ready)
+        # Nudge autoplay — TikTok's player should handle it, but just in case
         try:
-            self._vid_view.page().runJavaScript(js, _on_state)
-        except Exception:
-            pass
-
-    def _query_video_state(self) -> None:
-        if not self._vid_view:
-            return
-        js = (
-            "JSON.stringify({"
-            "vr:(document.getElementById('v')||{readyState:-1}).readyState,"
-            "vp:(document.getElementById('v')||{paused:true}).paused,"
-            "ct:(document.getElementById('v')||{currentTime:0}).currentTime"
-            "})"
-        )
-        try:
-            self._vid_view.page().runJavaScript(
-                js, lambda r: log.info("WebEngine state: %s", r)
+            self._view.page().runJavaScript(
+                "var v=document.querySelector('video');"
+                "if(v){v.muted=false;v.play().catch(function(){});}"
             )
         except Exception:
             pass
-
-    def _force_video_ready(self) -> None:
-        if not self._video_ready_emitted:
-            log.warning("Video readyState poll timed out — forcing video_ready")
-            self._video_ready_emitted = True
-            self.video_ready.emit()
-
-    def start_playing(self) -> None:
-        """Called by MainWindow when the host sends the play_video signal."""
-        if not self._vid_view:
-            return
-        try:
-            self._vid_view.page().runJavaScript(
-                "var v=document.getElementById('v');"
-                "if(v){v.currentTime=0;v.play().catch(function(){});}"
-            )
-            QTimer.singleShot(1500, self._query_video_state)
-        except Exception:
-            pass
-
-    def _on_media_status(self, status: QMediaPlayer.MediaStatus) -> None:
-        if not self._player:
-            return
-        log.info("QMediaPlayer status → %s", status)
-        if status == QMediaPlayer.MediaStatus.LoadedMedia:
-            self._player.play()
-        elif status == QMediaPlayer.MediaStatus.EndOfMedia:
-            self._player.setPosition(0)
-            self._player.play()
 
     # ── Cleanup ───────────────────────────────────────────────────────────────
 
     def cleanup(self) -> None:
-        """Stop player and delete temp video. Must be called before deleteLater()."""
-        if self._dl and self._dl.isRunning():
-            self._dl.cancel()
+        """Stop embed. Must be called before deleteLater()."""
+        if self._view:
             try:
-                self._dl.progress.disconnect()
-                self._dl.finished.disconnect()
-                self._dl.error.disconnect()
+                self._view.loadFinished.disconnect()
             except Exception:
                 pass
-
-        if self._uses_webengine and self._vid_view is not None:
             try:
-                self._vid_view.load(QUrl("about:blank"))
+                self._view.load(QUrl("about:blank"))
             except Exception:
                 pass
-
-        if self._player:
-            self._player.stop()
-            self._player.setSource(QUrl())
-            self._player = None
-
-        for attr in ("_tmp_file", "_html_file"):
-            path = getattr(self, attr, "")
-            if path:
-                try:
-                    Path(path).unlink(missing_ok=True)
-                except OSError:
-                    pass
-                setattr(self, attr, "")
 
 
 # ── Gradient fallback card ────────────────────────────────────────────────────

@@ -72,11 +72,6 @@ class MainWindow(QMainWindow):
         self._current_round_number = 0
         self._round_ended  = False   # guard against duplicate end_round calls
 
-        # Synchronized video-start state (reset each round)
-        self._players_video_ready: set[str] = set()
-        self._host_video_ready    = False
-        self._video_started       = False
-
         self._build_ui()
         self._restore_geometry()
 
@@ -150,7 +145,6 @@ class MainWindow(QMainWindow):
         self._game_screen.next_round_host.connect(self._on_host_next_round)
         self._game_screen.force_end_round.connect(self._on_force_end_round)
         self._game_screen.back_to_menu.connect(self._on_game_finished)
-        self._game_screen.video_ready.connect(self._on_local_video_ready)
 
         # TikTok
         self._tiktok_screen.back_requested.connect(self._go_menu)
@@ -198,7 +192,6 @@ class MainWindow(QMainWindow):
         self._host.video_sync_received.connect(self._on_video_sync_received)
         self._host.ready_changed.connect(self._on_ready_changed)
         self._host.answer_received.connect(self._on_remote_answer)
-        self._host.client_video_ready.connect(self._on_client_video_ready)
         self._host.identity_updated.connect(self._on_identity_updated)
         self._host.relay_status.connect(self._lobby_screen.set_relay_status)
 
@@ -272,7 +265,6 @@ class MainWindow(QMainWindow):
         self._client.kicked.connect(self._on_kicked)
         self._client.game_started.connect(self._on_game_started_client)
         self._client.round_begun.connect(self._on_round_begun_client)
-        self._client.play_video.connect(self._game_screen.start_playing)
         self._client.round_result.connect(self._on_round_result_client)
         self._client.game_ended.connect(self._on_game_ended_client)
         self._client.connection_lost.connect(self._on_connection_lost)
@@ -463,9 +455,6 @@ class MainWindow(QMainWindow):
 
         self._current_round_number = self._game_svc.current_round_number
         self._round_ended = False
-        self._players_video_ready = set()
-        self._host_video_ready    = False
-        self._video_started       = False
         choices = self._game_svc.get_choices(video)
 
         # Broadcast to clients (video without owner — video_url included for preview)
@@ -557,44 +546,6 @@ class MainWindow(QMainWindow):
 
     def _on_host_next_round(self) -> None:
         QTimer.singleShot(100, self._host_begin_next_round)
-
-    # ── Synchronized video start ──────────────────────────────────────────────
-
-    def _on_local_video_ready(self) -> None:
-        """Local VideoCard has buffered enough data to play."""
-        if self._is_host:
-            if self._video_started:
-                # Timeout fired before this video finished loading — start it now.
-                log.info("Late video_ready after play_video sent — starting locally")
-                self._game_screen.start_playing()
-                return
-            self._host_video_ready = True
-            self._check_all_video_ready()
-        else:
-            if self._client:
-                self._client.send_video_ready()
-
-    def _on_client_video_ready(self, player_id: str) -> None:
-        """A remote client's video is buffered."""
-        self._players_video_ready.add(player_id)
-        self._check_all_video_ready()
-
-    def _check_all_video_ready(self) -> None:
-        if self._video_started or not self._is_host or not self._host_video_ready:
-            return
-        expected = {p.player_id for p in self._players
-                    if p.player_id != self._local_player.player_id}
-        if expected <= self._players_video_ready:
-            self._play_video_now()
-
-    def _play_video_now(self) -> None:
-        if self._video_started:
-            return
-        self._video_started = True
-        log.info("All players ready — broadcasting play_video")
-        self._game_screen.start_playing()
-        if self._host:
-            self._host.broadcast_play_video()
 
     # ── Round end ─────────────────────────────────────────────────────────────
 
