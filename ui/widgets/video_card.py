@@ -210,19 +210,43 @@ class VideoCard(QWidget):
             self._stack.setCurrentIndex(2)
             return
 
-        # Write a minimal HTML next to the video and load via file://
-        # (no HTTP server — Chromium plays WebM from local file:// without issues)
+        # Write a canvas-based HTML player next to the video and load via file://.
+        # Using <canvas> + drawImage() instead of a bare <video> element works around
+        # the GPU compositing bug on Windows where the video track is silent-black
+        # (audio plays but frames never appear in the WebEngine widget).
         ts = int(time.time() * 1000)
         video_name = Path(filepath).name
-        html = (
-            "<!DOCTYPE html><html><head>"
-            "<style>*{margin:0;padding:0}html,body{width:100%;height:100%;"
-            "background:#000;overflow:hidden}"
-            "video{width:100%;height:100%;object-fit:contain}"
-            "</style></head><body>"
-            f"<video src='{video_name}' autoplay loop playsinline></video>"
-            "</body></html>"
-        )
+        html = f"""<!DOCTYPE html>
+<html><head><style>
+*{{margin:0;padding:0}}
+html,body{{width:100%;height:100%;background:#000;overflow:hidden}}
+canvas{{display:block;width:100%;height:100%}}
+</style></head><body>
+<canvas id="c"></canvas>
+<video id="v" src="{video_name}" autoplay loop playsinline style="display:none"></video>
+<script>
+(function(){{
+    var v=document.getElementById('v');
+    var c=document.getElementById('c');
+    var ctx=c.getContext('2d');
+    function frame(){{
+        if(v.videoWidth>0){{
+            var vw=v.videoWidth,vh=v.videoHeight;
+            var cw=c.offsetWidth,ch=c.offsetHeight;
+            if(c.width!==cw)c.width=cw;
+            if(c.height!==ch)c.height=ch;
+            var s=Math.min(cw/vw,ch/vh);
+            var x=(cw-vw*s)/2,y=(ch-vh*s)/2;
+            ctx.fillStyle='#000';ctx.fillRect(0,0,cw,ch);
+            ctx.drawImage(v,x,y,vw*s,vh*s);
+        }}
+        requestAnimationFrame(frame);
+    }}
+    v.play().catch(function(){{}});
+    frame();
+}})();
+</script>
+</body></html>"""
         html_path = Path(filepath).parent / f"player_{ts}.html"
         html_path.write_text(html, encoding="utf-8")
         self._html_file = str(html_path)
