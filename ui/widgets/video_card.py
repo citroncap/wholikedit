@@ -1,12 +1,16 @@
 """Video card shown during a game round.
 
 Downloads the video as VP8/WebM (works on Windows N/KN without WMF),
-then plays it from a local file:// URL in QtWebEngine.
-Falls back to a gradient preview if download fails or WebEngine is unavailable.
+serves it via a loopback HTTP server, and displays it in QtWebEngine
+using a canvas-based player that bypasses GPU compositor issues.
 """
 from __future__ import annotations
+import functools
+import http.server
 import logging
 import os
+import socketserver
+import threading
 import time
 from pathlib import Path
 from PyQt6.QtWidgets import (
@@ -39,13 +43,41 @@ _GRADIENTS = [
 ]
 _AlignC = Qt.AlignmentFlag.AlignCenter
 
+# ── Per-session loopback HTTP server ─────────────────────────────────────────
+# One server per app process, bound to the per-PID temp directory.
+# Reused across rounds; serves WebM + HTML from that directory.
+_http_server: socketserver.TCPServer | None = None
+_HTTP_PORT: int = 0
+_http_lock = threading.Lock()
+
+
+def _ensure_server(directory: Path) -> int:
+    """Start (or reuse) the loopback HTTP server for *directory*. Returns port."""
+    global _http_server, _HTTP_PORT
+    with _http_lock:
+        if _http_server is not None:
+            return _HTTP_PORT
+        try:
+            handler = functools.partial(
+                http.server.SimpleHTTPRequestHandler,
+                directory=str(directory),
+            )
+            srv = socketserver.TCPServer(("127.0.0.1", 0), handler)
+            _HTTP_PORT = srv.server_address[1]
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            _http_server = srv
+            log.info("Video HTTP server started on 127.0.0.1:%d  dir=%s", _HTTP_PORT, directory)
+        except Exception as exc:
+            log.warning("HTTP server failed: %s", exc)
+    return _HTTP_PORT
+
 
 class VideoCard(QWidget):
-    """Downloads and plays a TikTok video locally via VP8/WebM + file:// URL.
+    """Downloads and plays a TikTok video via VP8/WebM + loopback HTTP + canvas.
 
     Stack pages:
       0 – downloading  (gradient preview + progress bar)
-      1 – playing      (QWebEngineView loading a local HTML file)
+      1 – playing      (QWebEngineView with canvas-based player)
       2 – fallback     (gradient preview + "Open on TikTok" button)
     """
 
@@ -183,7 +215,6 @@ class VideoCard(QWidget):
     def _start_download(self, url: str) -> None:
         from utils.video_downloader import VideoDownloader
         from utils.config import DATA_DIR
-        # Per-PID temp dir so two instances on the same machine don't clobber each other
         tmp = DATA_DIR / "video_tmp" / str(os.getpid())
         tmp.mkdir(parents=True, exist_ok=True)
 
@@ -202,18 +233,21 @@ class VideoCard(QWidget):
         sz = Path(filepath).stat().st_size if Path(filepath).exists() else 0
         log.info("Download complete: %s  (%.1f MB)", filepath, sz / 1e6)
 
-        # Transcoding to WebM might have failed (ffmpeg not installed) and the
-        # downloader returned the original H.264 file. That won't play on
-        # Windows N/KN without WMF — show the fallback card instead.
         if not filepath.endswith(".webm"):
-            log.warning("Non-WebM file after transcode step (%s) — showing fallback", filepath)
+            log.warning("Non-WebM file (%s) — ffmpeg may not be installed, showing fallback", filepath)
             self._stack.setCurrentIndex(2)
             return
 
-        # Write a canvas-based HTML player next to the video and load via file://.
-        # Using <canvas> + drawImage() instead of a bare <video> element works around
-        # the GPU compositing bug on Windows where the video track is silent-black
-        # (audio plays but frames never appear in the WebEngine widget).
+        tmp_dir = Path(filepath).parent
+        port = _ensure_server(tmp_dir)
+        if not port:
+            log.warning("HTTP server unavailable — showing fallback")
+            self._stack.setCurrentIndex(2)
+            return
+
+        # Canvas-based player: hidden <video> decoded by Chromium,
+        # drawn frame-by-frame to <canvas> via requestAnimationFrame.
+        # This bypasses the GPU compositor path that causes black video on Windows.
         ts = int(time.time() * 1000)
         video_name = Path(filepath).name
         html = f"""<!DOCTYPE html>
@@ -223,7 +257,7 @@ html,body{{width:100%;height:100%;background:#000;overflow:hidden}}
 canvas{{display:block;width:100%;height:100%}}
 </style></head><body>
 <canvas id="c"></canvas>
-<video id="v" src="{video_name}" autoplay loop playsinline style="display:none"></video>
+<video id="v" src="{video_name}?t={ts}" autoplay loop playsinline style="display:none"></video>
 <script>
 (function(){{
     var v=document.getElementById('v');
@@ -247,21 +281,21 @@ canvas{{display:block;width:100%;height:100%}}
 }})();
 </script>
 </body></html>"""
-        html_path = Path(filepath).parent / f"player_{ts}.html"
+        html_path = tmp_dir / f"player_{ts}.html"
         html_path.write_text(html, encoding="utf-8")
         self._html_file = str(html_path)
 
         self._stack.setCurrentIndex(1)
-        QTimer.singleShot(80, lambda: self._load_local_player(self._html_file))
+        QTimer.singleShot(80, lambda: self._load_webengine(port, html_path.name))
 
     def _on_error(self, msg: str) -> None:
         log.warning("Video download error: %s", msg)
         self._stack.setCurrentIndex(2)
 
-    # ── Local player ──────────────────────────────────────────────────────────
+    # ── WebEngine player ──────────────────────────────────────────────────────
 
-    def _load_local_player(self, html_path: str) -> None:
-        if not _WEBENGINE or not Path(html_path).exists():
+    def _load_webengine(self, port: int, html_name: str) -> None:
+        if not _WEBENGINE:
             self._stack.setCurrentIndex(2)
             return
 
@@ -280,8 +314,8 @@ canvas{{display:block;width:100%;height:100%}}
         if self._player_area:
             self._player_area.addWidget(self._view)
 
-        url = QUrl.fromLocalFile(html_path)
-        log.info("Loading local player: %s", url.toString())
+        url = QUrl(f"http://127.0.0.1:{port}/{html_name}")
+        log.info("Loading video player: %s", url.toString())
         self._view.load(url)
 
     # ── Cleanup ───────────────────────────────────────────────────────────────
@@ -357,7 +391,6 @@ class _GradientPreview(QWidget):
             self._inner.addWidget(desc)
 
     def add_extra(self, widget: QWidget) -> None:
-        """Append a widget below the fixed content (used for progress bar etc.)."""
         self._inner.addWidget(widget)
 
     def paintEvent(self, event) -> None:  # type: ignore[override]

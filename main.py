@@ -7,13 +7,10 @@ import logging
 # Ensure the project root is in sys.path when run as a script or EXE
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Disable QtWebEngine GPU compositing — prevents the "sound but black video"
-# bug on Windows where the GPU compositor fails to render WebM video frames.
-# Must be set before QApplication / QWebEngineView are created.
-os.environ.setdefault(
-    "QTWEBENGINE_CHROMIUM_FLAGS",
-    "--disable-gpu --disable-software-rasterizer",
-)
+# Force WebEngine to use SwiftShader (software GPU) instead of the real GPU.
+# Prevents the "audio plays but black video" bug caused by GPU compositor
+# failures on Windows. Must be set before QApplication is created.
+os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu")
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt, QT_VERSION_STR, PYQT_VERSION_STR
